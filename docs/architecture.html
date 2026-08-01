@@ -1,12 +1,261 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deploy Orchestrator — Interactive Architecture</title><style>
-:root{--bg:#07111f;--surface:#101f35;--line:#2a4667;--text:#ebf4ff;--muted:#9eb2ca;--mint:#5ce1b2;--blue:#65b5ff;--gold:#ffd26b;--red:#ff8494;--purple:#c4a5ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#163454 0,transparent 32%),var(--bg);color:var(--text);font:15px/1.48 Inter,ui-sans-serif,system-ui,sans-serif}.page{max-width:1200px;margin:auto;padding:38px 24px 64px}.eyebrow{color:var(--mint);font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{font-size:clamp(30px,5vw,54px);line-height:1.03;margin:7px 0 12px}h2{margin:34px 0 13px;font-size:22px}.intro{max-width:760px;color:var(--muted);font-size:17px}.controls{display:flex;gap:9px;flex-wrap:wrap;margin:22px 0}.route{background:#142b46;color:#cce7ff;border:1px solid #315b81;border-radius:999px;padding:9px 12px;cursor:pointer;font:700 13px ui-monospace,SFMono-Regular,monospace}.route:hover,.route.active{background:var(--blue);border-color:var(--blue);color:#061321}.route:focus-visible{outline:3px solid var(--gold);outline-offset:2px}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(270px,.8fr);gap:18px}.panel{background:linear-gradient(145deg,rgba(20,42,70,.9),rgba(10,25,43,.9));border:1px solid var(--line);border-radius:16px;padding:18px}.diagram{position:relative;min-height:510px;overflow:hidden;background:linear-gradient(135deg,#0c1b30,#102a48);border-radius:12px;border:1px solid #294b70}.gridlines{position:absolute;inset:0;background-image:linear-gradient(#31506a22 1px,transparent 1px),linear-gradient(90deg,#31506a22 1px,transparent 1px);background-size:32px 32px}.node{position:absolute;width:150px;min-height:78px;padding:12px;border-radius:12px;border:1px solid #436889;background:#102b49;box-shadow:0 10px 25px #0004;transition:.35s transform,.35s border-color,.35s box-shadow;z-index:2}.node strong{display:block;font-size:14px}.node small{display:block;color:var(--muted);margin-top:4px}.node.active{border-color:var(--mint);box-shadow:0 0 0 3px #5ce1b233,0 10px 28px #0008;transform:translateY(-4px)}#client{left:5%;top:38%}#http{left:29%;top:38%}#service{left:55%;top:21%}#store{left:55%;top:62%}#response{right:3%;top:38%}.arrow{position:absolute;height:2px;background:#4b7398;transform-origin:left center;z-index:1}.arrow::after{content:'';position:absolute;right:-1px;top:-4px;border-left:9px solid #4b7398;border-top:5px solid transparent;border-bottom:5px solid transparent}.arrow.flow{background:var(--mint);box-shadow:0 0 12px var(--mint);animation:pulse 1.25s ease-in-out infinite}.arrow.flow::after{border-left-color:var(--mint)}#a1{left:20%;top:46%;width:11%;transform:rotate(0)}#a2{left:44%;top:44%;width:12%;transform:rotate(-31deg)}#a3{left:63%;top:37%;width:12%;transform:rotate(32deg)}#a4{left:63%;top:64%;width:12%;transform:rotate(-31deg)}#a5{left:69%;top:70%;width:10%;transform:rotate(-32deg)}#a6{left:42%;top:68%;width:14%;transform:rotate(0)}.packet{position:absolute;width:12px;height:12px;background:var(--gold);border-radius:50%;box-shadow:0 0 15px var(--gold);z-index:4;opacity:0;transition:opacity .2s}.packet.play{opacity:1;animation:travel 2.7s linear infinite}@keyframes pulse{50%{opacity:.55}}@keyframes travel{0%{left:20%;top:45%}22%{left:43%;top:45%}43%{left:61%;top:31%}63%{left:66%;top:65%}82%{left:78%;top:45%}100%{left:91%;top:45%}}.detail h3{margin:0 0 7px;color:var(--mint)}.detail p{color:var(--muted);margin:0 0 12px}.mono{white-space:pre-wrap;background:#081625;border:1px solid #294968;color:#cce9ff;border-radius:10px;padding:12px;font:12px/1.45 ui-monospace,SFMono-Regular,monospace;min-height:146px}.badges{display:flex;gap:7px;flex-wrap:wrap}.badge{padding:4px 8px;border-radius:999px;font-size:12px;font-weight:750;background:#173754;color:#bde3ff}.badge.ok{background:#123d35;color:#9beecb}.badge.warn{background:#4b351c;color:#ffdc94}.state-machine{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:center;max-width:820px}.state{position:relative;padding:11px 8px;border:1px solid #365676;border-radius:9px;background:#102a46;text-align:center;font:700 12px ui-monospace,monospace}.state.running{border-color:var(--gold);color:#ffe19a}.state.succeeded{border-color:var(--mint);color:#9befce}.state.failed{border-color:var(--red);color:#ffb2bb}.branch{display:grid;gap:8px}.arrow-label{color:#78a9d4;font:700 13px ui-monospace,monospace;text-align:center}.arrow-label::before{content:'← ';color:#78a9d4}.arrow-label::after{content:' →';color:#78a9d4}.rollback{display:grid;gap:8px}.rollback .arrow-label::before{content:''}.rollback .arrow-label::after{content:' →'}.legend{margin-top:12px;color:var(--muted);font-size:13px}.legend b{color:var(--text)}@media(max-width:850px){.layout{grid-template-columns:1fr}.diagram{min-height:455px}.node{width:125px;font-size:13px}#client{left:2%}#http{left:25%}#service,#store{left:48%}#response{right:1%}.states{grid-template-columns:repeat(3,1fr)}.state:nth-child(3)::after{display:none}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
-</style></head><body><main class="page"><div class="eyebrow">Interactive system walkthrough</div><h1>How Deploy Orchestrator works</h1><p class="intro">Choose an endpoint to animate its request path and inspect the domain rule behind it. The flow separates HTTP concerns, deployment rules and in-memory storage.</p><div class="controls" role="group" aria-label="Choose endpoint"><button class="route active" data-route="create">POST /deployments</button><button class="route" data-route="transition">POST /deployments/:id/transitions</button><button class="route" data-route="list">GET /deployments</button><button class="route" data-route="current">GET /services/:name/current</button><button class="route" data-route="health">GET /health</button></div><section class="layout"><div class="panel"><div class="diagram" aria-label="Architecture flow diagram"><div class="gridlines"></div><div class="packet play" aria-hidden="true"></div><div class="node active" id="client"><strong>Client</strong><small>curl · app · CI</small></div><div class="node active" id="http"><strong>HTTP Router</strong><small>JSON + validation</small></div><div class="node active" id="service"><strong>DeploymentService</strong><small>state machine + rules</small></div><div class="node active" id="store"><strong>In-memory store</strong><small>Map + key index</small></div><div class="node active" id="response"><strong>JSON response</strong><small>200 · 201 · 4xx</small></div><i class="arrow flow" id="a1"></i><i class="arrow flow" id="a2"></i><i class="arrow flow" id="a3"></i><i class="arrow flow" id="a4"></i><i class="arrow flow" id="a5"></i><i class="arrow flow" id="a6"></i></div><p class="legend"><b>Animated mint path:</b> current request. <b>Gold packet:</b> request moving through the system. Click a route above to replay a different path.</p></div><aside class="panel detail"><h3 id="title">Create a deployment</h3><p id="description">Validate the payload and Idempotency-Key, then enforce one active deployment per service before inserting a queued record.</p><div class="badges" id="badges"><span class="badge">201 Created</span><span class="badge ok">Idempotent</span><span class="badge warn">409 if in flight</span></div><h3 style="margin-top:18px">Example</h3><div class="mono" id="example">POST /deployments
-Idempotency-Key: deploy-orders-1
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07131f" />
+  <title>Deploy Orchestrator · Interactive Architecture</title>
+  <style>
+    :root {
+      --canvas: #07131f;
+      --canvas-2: #0b1d31;
+      --panel: rgba(14, 34, 56, .82);
+      --panel-strong: #102943;
+      --line: rgba(146, 194, 234, .19);
+      --text: #edf7ff;
+      --muted: #9bb4c9;
+      --soft: #c4d4e2;
+      --cyan: #57d9ff;
+      --mint: #62e7bb;
+      --gold: #ffd36b;
+      --rose: #ff8798;
+      --violet: #bba5ff;
+      --shadow: 0 20px 55px rgba(0, 0, 0, .28);
+      color-scheme: dark;
+    }
 
-{ "service": "orders", "version": "1.0.0" }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      min-width: 320px;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 7% 0%, rgba(54, 135, 214, .24), transparent 29rem),
+        radial-gradient(circle at 92% 13%, rgba(77, 224, 180, .13), transparent 25rem),
+        var(--canvas);
+    }
 
-→ 201 { status: "queued", … }</div></aside></section><h2>Deployment state machine</h2><section class="panel"><div class="state-machine"><div class="state">queued</div><div class="branch"><div class="state running">running</div><div class="arrow-label">can become</div></div><div><div class="state succeeded">succeeded</div><div class="rollback"><div class="arrow-label">then</div><div class="state">rolled_back</div></div></div><div class="branch"><div class="state failed">failed</div><div class="arrow-label">from running</div></div></div><p class="legend"><b>Legal transitions:</b> queued → running; running → succeeded or failed; succeeded → rolled_back. Any other transition returns <b>409 Conflict</b>. Click <b>POST /deployments/:id/transitions</b> above to focus this rule.</p></section></main><script>
-const routes={create:{title:'Create a deployment',description:'Validate service and version. If the key was seen, return the original record. Otherwise, reject a queued/running deployment for the same service, then create a queued record synchronously.',badges:['201 Created','Idempotency-Key','409 if in flight'],example:'POST /deployments\nIdempotency-Key: deploy-orders-1\n\n{ "service": "orders", "version": "1.0.0" }\n\n→ 201 { status: "queued", … }',active:['client','http','service','store','response']},transition:{title:'Apply a state transition',description:'The service validates the target and checks the explicit transition table. The synchronous read–validate–write sequence prevents two handlers from applying against the same previous state in one process.',badges:['200 Updated','400 invalid target','404 missing','409 illegal transition'],example:'POST /deployments/abc/transitions\n\n{ "to": "running" }\n\nqueued → running → 200',active:['client','http','service','store','response']},list:{title:'List deployments',description:'The router validates status, limit and offset. The service filters by service/status, sorts newest first and returns a page plus nextOffset.',badges:['200 OK','filters','offset pagination'],example:'GET /deployments?service=orders&status=succeeded&limit=20&offset=0\n\n→ { data: [...], nextOffset: null }',active:['client','http','service','store','response']},current:{title:'Resolve current service version',description:'The service selects the most recent deployment still in succeeded state. A deployment that was rolled back is no longer returned as current.',badges:['200 OK','404 if absent','rollback-aware'],example:'GET /services/orders/current\n\n→ 200 { service: "orders", version: "1.0.0", status: "succeeded" }',active:['client','http','service','store','response']},health:{title:'Report service health',description:'No request body or deployment lookup is needed. The service calculates uptime and counts queued plus running deployments as inFlight.',badges:['200 OK','uptime','inFlight'],example:'GET /health\n\n→ { "status": "ok", "uptime": 42, "inFlight": 1 }',active:['client','http','service','response']}};
-const nodeIds=['client','http','service','store','response'];const arrowIds=['a1','a2','a3','a4','a5','a6'];function render(name){const r=routes[name];document.querySelectorAll('.route').forEach(b=>b.classList.toggle('active',b.dataset.route===name));document.querySelector('#title').textContent=r.title;document.querySelector('#description').textContent=r.description;document.querySelector('#example').textContent=r.example;document.querySelector('#badges').innerHTML=r.badges.map((b,i)=>`<span class="badge ${i===1?'ok':''}">${b}</span>`).join('');nodeIds.forEach(id=>document.querySelector('#'+id).classList.toggle('active',r.active.includes(id)));arrowIds.forEach((id,i)=>document.querySelector('#'+id).classList.toggle('flow',i<5||name!=='health'));const p=document.querySelector('.packet');p.classList.remove('play');void p.offsetWidth;p.classList.add('play')};document.querySelectorAll('.route').forEach(b=>b.addEventListener('click',()=>render(b.dataset.route)));render('create');
-</script></body></html>
+    button { font: inherit; }
+    button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+    .page { width: min(1180px, calc(100% - 32px)); margin-inline: auto; padding: 32px 0 72px; }
+
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--soft); font-size: 13px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    .brand-mark { display: grid; width: 31px; height: 31px; place-items: center; border: 1px solid rgba(87, 217, 255, .55); border-radius: 10px; color: var(--cyan); background: rgba(58, 161, 236, .1); box-shadow: 0 0 24px rgba(87, 217, 255, .15); }
+    .run-state { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .run-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 0 rgba(98, 231, 187, .55); animation: beacon 2.2s infinite; }
+
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px; align-items: end; padding: 54px 0 34px; }
+    .eyebrow { margin: 0 0 11px; color: var(--cyan); font-size: 12px; font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
+    h1 { max-width: 740px; margin: 0; font-size: clamp(2.45rem, 6vw, 5.6rem); line-height: .96; letter-spacing: -.062em; }
+    .hero p { max-width: 700px; margin: 20px 0 0; color: var(--muted); font-size: clamp(1rem, 1.7vw, 1.13rem); }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(88px, 1fr)); gap: 10px; }
+    .metric { min-height: 79px; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: rgba(12, 30, 49, .62); box-shadow: var(--shadow); }
+    .metric b { display: block; color: var(--mint); font-size: 21px; line-height: 1.05; }.metric span { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+
+    .control-panel, .diagram-card, .inspector, .states-card { border: 1px solid var(--line); border-radius: 20px; background: linear-gradient(145deg, rgba(18, 46, 75, .84), rgba(9, 24, 41, .88)); box-shadow: var(--shadow); }
+    .control-panel { padding: 16px; }
+    .control-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 0 4px 12px; }
+    .control-header span { color: var(--muted); font-size: 13px; }.control-header b { color: var(--soft); font-size: 13px; }
+    .routes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+    .route { min-height: 70px; padding: 11px 12px; cursor: pointer; border: 1px solid transparent; border-radius: 13px; color: var(--muted); text-align: left; background: rgba(7, 18, 31, .45); transition: .25s ease; }
+    .route:hover { transform: translateY(-2px); color: var(--text); background: rgba(42, 84, 120, .47); }
+    .route.is-selected { border-color: rgba(87, 217, 255, .66); color: #071521; background: linear-gradient(145deg, #77dcff, #8ff2ce); box-shadow: 0 8px 24px rgba(87, 217, 255, .16); }
+    .method { display: block; margin-bottom: 5px; font: 800 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }.route .path { display: block; font: 700 12px/1.25 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(290px, .72fr); gap: 16px; margin-top: 16px; }
+    .diagram-card { position: relative; min-width: 0; overflow: hidden; padding: clamp(18px, 3vw, 30px); }
+    .diagram-card::before { position: absolute; inset: 0; content: ""; pointer-events: none; opacity: .5; background-image: linear-gradient(rgba(113, 167, 207, .07) 1px, transparent 1px), linear-gradient(90deg, rgba(113, 167, 207, .07) 1px, transparent 1px); background-size: 32px 32px; mask-image: linear-gradient(to bottom, #000, transparent); }
+    .card-kicker { position: relative; display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 24px; color: var(--muted); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }.card-kicker b { color: var(--cyan); }
+
+    .flow { position: relative; display: grid; grid-template-columns: 1fr 34px 1fr 34px 1fr 34px 1fr 34px 1fr; align-items: center; min-height: 280px; }
+    .flow-node { position: relative; z-index: 2; min-width: 0; min-height: 132px; padding: 16px 14px; border: 1px solid rgba(161, 207, 241, .22); border-radius: 16px; background: rgba(7, 22, 38, .76); transition: transform .35s cubic-bezier(.2,.8,.2,1), border-color .35s, box-shadow .35s, opacity .35s; }
+    .flow-node:not(.is-on) { opacity: .48; }.flow-node.is-on { border-color: rgba(87, 217, 255, .7); box-shadow: 0 0 0 3px rgba(87, 217, 255, .09), 0 15px 32px rgba(0,0,0,.2); transform: translateY(-7px); }
+    .node-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 10px; color: var(--cyan); background: rgba(87, 217, 255, .12); font-size: 17px; }.flow-node:nth-of-type(5) .node-icon { color: var(--mint); background: rgba(98,231,187,.12); }
+    .node-title { display: block; margin-top: 15px; font-size: 14px; font-weight: 800; }.node-desc { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .connector { position: relative; height: 2px; overflow: visible; background: rgba(127, 178, 218, .25); }.connector::after { position: absolute; top: -4px; right: -1px; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid rgba(127, 178, 218, .48); content: ""; }.connector.is-on { background: linear-gradient(90deg, var(--cyan), var(--mint)); box-shadow: 0 0 14px rgba(87,217,255,.7); }.connector.is-on::after { border-left-color: var(--mint); }.connector.is-on .signal { display: block; }
+    .signal { position: absolute; top: 50%; left: 0; display: none; width: 10px; height: 10px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 13px var(--gold); transform: translate(-50%, -50%); animation: signal 1.55s linear infinite; }
+
+    .flow-footer { position: relative; display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 22px; padding-top: 16px; border-top: 1px solid rgba(159, 208, 239, .12); }.flow-footer p { margin: 0; color: var(--muted); font-size: 12px; }.flow-footer strong { color: var(--soft); }.flow-actions { display: flex; gap: 8px; flex-shrink: 0; }.action { cursor: pointer; padding: 8px 10px; border: 1px solid rgba(132, 188, 227, .26); border-radius: 9px; color: var(--soft); background: rgba(32, 72, 106, .28); font-size: 12px; font-weight: 750; transition: .2s ease; }.action:hover { color: #061420; background: var(--mint); border-color: var(--mint); }
+
+    .inspector { min-width: 0; padding: 22px; }.inspector-label { color: var(--cyan); font-size: 11px; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }.inspector h2 { margin: 8px 0 10px; font-size: 23px; line-height: 1.05; letter-spacing: -.035em; }.inspector p { margin: 0; color: var(--muted); font-size: 13px; }.badge-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 17px 0; }.badge { padding: 5px 8px; border-radius: 999px; color: #afeed9; background: rgba(54, 176, 133, .17); font: 800 11px/1 ui-monospace, monospace; }.badge.warn { color: #ffdf9a; background: rgba(255, 190, 83, .16); }.badge.red { color: #ffb6c0; background: rgba(255, 122, 142, .15); }
+    .code-title { margin: 20px 0 8px; color: var(--soft); font-size: 12px; font-weight: 800; }.code { overflow: auto; min-height: 157px; margin: 0; padding: 13px; border: 1px solid rgba(139, 192, 228, .16); border-radius: 12px; color: #c8e5f7; background: rgba(2, 12, 22, .64); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+
+    .states-card { margin-top: 16px; padding: clamp(18px, 3vw, 28px); }.section-title { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 22px; }.section-title h2 { margin: 0; font-size: clamp(1.35rem, 3vw, 1.8rem); letter-spacing: -.035em; }.section-title p { max-width: 560px; margin: 0; color: var(--muted); font-size: 13px; }
+    .state-map { display: grid; grid-template-columns: 1fr 58px 1.1fr 58px 1fr; align-items: center; }.state { position: relative; min-width: 0; padding: 15px; border: 1px solid rgba(151, 205, 240, .23); border-radius: 13px; text-align: center; background: rgba(6, 20, 34, .62); transition: .35s ease; }.state b { display: block; font: 800 13px/1 ui-monospace, monospace; }.state small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }.state.queued b { color: var(--soft); }.state.running b { color: var(--gold); }.state.succeeded b { color: var(--mint); }.state.failed b { color: var(--rose); }.state.rolled b { color: var(--violet); }.state.active { transform: translateY(-5px); border-color: currentColor; box-shadow: 0 10px 25px rgba(0,0,0,.22); }.state-arrow { height: 2px; background: rgba(138, 187, 222, .28); }.state-arrow::after { float: right; margin-top: -4px; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid rgba(138, 187, 222, .55); content: ""; }.branch { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 14px; padding-left: calc(40% + 2px); }.branch .state { min-height: 76px; }.branch .state::before { position: absolute; top: -16px; left: 50%; width: 2px; height: 15px; content: ""; background: rgba(138,187,222,.35); }
+    .state-note { margin: 17px 0 0; color: var(--muted); font-size: 12px; }.state-note strong { color: var(--soft); }
+
+    @keyframes beacon { 55% { box-shadow: 0 0 0 8px rgba(98, 231, 187, 0); } 100% { box-shadow: 0 0 0 0 rgba(98, 231, 187, 0); } }
+    @keyframes signal { from { transform: translate(-50%, -50%) translateX(0); } to { transform: translate(-50%, -50%) translateX(100%); } }
+
+    @media (max-width: 1060px) { .hero { grid-template-columns: 1fr; gap: 24px; }.metrics { width: min(390px, 100%); }.routes { grid-template-columns: repeat(3, 1fr); }.workspace { grid-template-columns: 1fr; }.flow { min-height: 195px; }.flow-node { min-height: 118px; }.node-desc { font-size: 11px; } }
+    @media (max-width: 720px) { .page { width: min(100% - 24px, 1180px); padding-top: 20px; }.topbar { align-items: flex-start; }.run-state { padding-top: 7px; }.hero { padding: 40px 0 25px; }.metrics { grid-template-columns: repeat(3, 1fr); gap: 7px; }.metric { min-height: 68px; padding: 10px; }.metric b { font-size: 18px; }.metric span { font-size: 9px; }.routes { grid-template-columns: repeat(2, 1fr); }.route:last-child { grid-column: span 2; }.flow { grid-template-columns: 1fr; gap: 0; min-height: 0; }.flow-node { min-height: 0; padding: 13px 15px; display: grid; grid-template-columns: 34px 1fr; column-gap: 12px; align-items: center; }.node-title { margin: 0; }.node-desc { grid-column: 2; margin-top: 3px; }.connector { width: 2px; height: 27px; margin: 0 auto; }.connector::after { top: auto; right: -4px; bottom: -1px; border-top: 8px solid rgba(127,178,218,.48); border-right: 5px solid transparent; border-left: 5px solid transparent; border-bottom: 0; }.connector.is-on::after { border-top-color: var(--mint); border-left-color: transparent; }.signal { animation-name: signal-mobile; }.flow-footer { align-items: flex-start; flex-direction: column; }.flow-actions { width: 100%; }.action { flex: 1; }.state-map { grid-template-columns: 1fr; gap: 9px; }.state-arrow { width: 2px; height: 23px; margin: auto; }.state-arrow::after { float: none; position: absolute; bottom: -1px; left: -4px; margin: 0; border-top: 8px solid rgba(138,187,222,.55); border-right: 5px solid transparent; border-left: 5px solid transparent; border-bottom: 0; }.branch { grid-template-columns: 1fr; margin-top: 0; padding-left: 0; }.branch .state::before { display: none; } }
+    @media (max-width: 420px) { .brand { font-size: 10px; }.run-state { font-size: 11px; }.routes { grid-template-columns: 1fr; }.route:last-child { grid-column: auto; }.metrics { width: 100%; }.code { font-size: 11px; } }
+    @keyframes signal-mobile { from { transform: translate(-50%, -50%) translateY(0); } to { transform: translate(-50%, -50%) translateY(100%); } }
+    .motion-paused .signal, .motion-paused .run-dot { animation-play-state: paused; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div class="topbar">
+        <div class="brand"><span class="brand-mark">↗</span> Deploy Orchestrator</div>
+        <div class="run-state"><span class="run-dot"></span><span id="motion-label">Live walkthrough</span></div>
+      </div>
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Interactive architecture map</p>
+          <h1>Every deployment has a safe path.</h1>
+          <p>Explore each API route and watch how validation, domain rules, in-memory safeguards and responses work together to keep a deployment lifecycle predictable.</p>
+        </div>
+        <div class="metrics" aria-label="System facts">
+          <div class="metric"><b>5</b><span>API routes</span></div>
+          <div class="metric"><b>5</b><span>states</span></div>
+          <div class="metric"><b>4xx</b><span>guard rails</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="control-panel" aria-labelledby="route-selector-title">
+      <div class="control-header"><b id="route-selector-title">Choose a request to simulate</b><span>Use ← → keys to switch routes</span></div>
+      <div class="routes" role="tablist" aria-label="API endpoints">
+        <button class="route is-selected" role="tab" aria-selected="true" data-route="create"><span class="method">POST</span><span class="path">/deployments</span></button>
+        <button class="route" role="tab" aria-selected="false" data-route="transition"><span class="method">POST</span><span class="path">/:id/transitions</span></button>
+        <button class="route" role="tab" aria-selected="false" data-route="list"><span class="method">GET</span><span class="path">/deployments</span></button>
+        <button class="route" role="tab" aria-selected="false" data-route="current"><span class="method">GET</span><span class="path">/services/:name/current</span></button>
+        <button class="route" role="tab" aria-selected="false" data-route="health"><span class="method">GET</span><span class="path">/health</span></button>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="Request flow and endpoint inspector">
+      <article class="diagram-card">
+        <div class="card-kicker"><span>Request journey</span><b id="journey-label">Create deployment</b></div>
+        <div class="flow" id="flow" aria-live="polite">
+          <div class="flow-node is-on" data-node="client"><span class="node-icon">⌘</span><span class="node-title">Client</span><span class="node-desc">curl · app · CI</span></div>
+          <div class="connector is-on"><i class="signal"></i></div>
+          <div class="flow-node is-on" data-node="router"><span class="node-icon">⌁</span><span class="node-title">HTTP Router</span><span class="node-desc">JSON · query · status</span></div>
+          <div class="connector is-on"><i class="signal"></i></div>
+          <div class="flow-node is-on" data-node="domain"><span class="node-icon">◈</span><span class="node-title">Domain Service</span><span class="node-desc">states · invariants</span></div>
+          <div class="connector is-on"><i class="signal"></i></div>
+          <div class="flow-node is-on" data-node="store"><span class="node-icon">▤</span><span class="node-title">In-memory Store</span><span class="node-desc">Map · key index</span></div>
+          <div class="connector is-on"><i class="signal"></i></div>
+          <div class="flow-node is-on" data-node="response"><span class="node-icon">✓</span><span class="node-title">Response</span><span class="node-desc">200 · 201 · 4xx</span></div>
+        </div>
+        <div class="flow-footer"><p id="flow-summary"><strong>Active safeguard:</strong> one queued or running deployment per service.</p><div class="flow-actions"><button class="action" id="replay" type="button">↻ Replay flow</button><button class="action" id="motion" type="button">Ⅱ Pause motion</button></div></div>
+      </article>
+
+      <aside class="inspector" aria-live="polite">
+        <div class="inspector-label">Selected endpoint</div>
+        <h2 id="endpoint-title">Create a deployment</h2>
+        <p id="endpoint-description">Validate service and version, respect idempotency and enforce one active deployment before creating a queued record.</p>
+        <div class="badge-row" id="badges"></div>
+        <div class="code-title">Example exchange</div>
+        <pre class="code" id="example"></pre>
+      </aside>
+    </section>
+
+    <section class="states-card" aria-labelledby="state-title">
+      <div class="section-title"><div><p class="eyebrow">State machine</p><h2 id="state-title">Legal transitions, made explicit.</h2></div><p id="state-copy">A deployment begins queued. The domain service rejects every transition outside the approved path with <strong>409 Conflict</strong>.</p></div>
+      <div class="state-map" aria-label="Deployment state machine">
+        <div class="state queued" data-state="queued"><b>queued</b><small>initial</small></div><div class="state-arrow"></div>
+        <div class="state running" data-state="running"><b>running</b><small>in flight</small></div><div class="state-arrow"></div>
+        <div class="state succeeded" data-state="succeeded"><b>succeeded</b><small>current version</small></div>
+      </div>
+      <div class="branch"><div class="state failed" data-state="failed"><b>failed</b><small>from running</small></div><div class="state rolled" data-state="rolled_back"><b>rolled_back</b><small>from succeeded</small></div></div>
+      <p class="state-note"><strong>In-flight count:</strong> only <code>queued</code> and <code>running</code> contribute to <code>GET /health</code>. Select the transition route to highlight the lifecycle.</p>
+    </section>
+  </main>
+
+  <script>
+    const data = {
+      create: {
+        label: 'Create deployment', title: 'Create a deployment',
+        description: 'Validate service and version, respect idempotency and enforce one active deployment before creating a queued record.',
+        badges: [['201 Created','ok'], ['Idempotency-Key','ok'], ['409 in flight','warn']],
+        example: `POST /deployments\nIdempotency-Key: deploy-orders-01\n\n{ "service": "orders", "version": "1.4.0" }\n\n→ 201 { "status": "queued", "id": "…" }`,
+        summary: 'one queued or running deployment per service.', nodes: ['client','router','domain','store','response'], states: ['queued']
+      },
+      transition: {
+        label: 'Apply transition', title: 'Apply a state transition',
+        description: 'Decode and validate the path ID, then apply only a legal transition from the explicit state machine.',
+        badges: [['200 Updated','ok'], ['400 invalid target','warn'], ['404 missing','red'], ['409 illegal','red']],
+        example: `POST /deployments/dpl_42/transitions\n\n{ "to": "running" }\n\n→ 200 { "status": "running", "id": "dpl_42" }`,
+        summary: 'only queued → running, running → succeeded or failed, and succeeded → rolled_back.', nodes: ['client','router','domain','store','response'], states: ['queued','running','succeeded','failed','rolled_back']
+      },
+      list: {
+        label: 'List deployments', title: 'List and paginate deployments',
+        description: 'Validate filters, limit and offset. The service filters, deterministically orders newest first and returns the next offset.',
+        badges: [['200 OK','ok'], ['service + status','ok'], ['offset pagination','warn']],
+        example: `GET /deployments?service=orders&status=succeeded&limit=20&offset=0\n\n→ 200 { "data": [ … ], "nextOffset": null }`,
+        summary: 'valid status filters and deterministic newest-first ordering.', nodes: ['client','router','domain','store','response'], states: []
+      },
+      current: {
+        label: 'Resolve current version', title: 'Get the current version',
+        description: 'Find the latest succeeded deployment for the service. A later rolled-back deployment is not treated as current.',
+        badges: [['200 OK','ok'], ['404 if absent','red'], ['rollback aware','warn']],
+        example: `GET /services/orders/current\n\n→ 200 { "service": "orders", "version": "1.4.0", "status": "succeeded" }`,
+        summary: 'only the latest non-rolled-back succeeded version is current.', nodes: ['client','router','domain','store','response'], states: ['succeeded','rolled_back']
+      },
+      health: {
+        label: 'Health check', title: 'Report service health',
+        description: 'Return a lightweight service snapshot: health status, elapsed uptime and the number of queued plus running deployments.',
+        badges: [['200 OK','ok'], ['uptime','ok'], ['inFlight','warn']],
+        example: `GET /health\n\n→ 200 { "status": "ok", "uptime": 42, "inFlight": 1 }`,
+        summary: 'queued + running deployments are counted as inFlight.', nodes: ['client','router','domain','store','response'], states: ['queued','running']
+      }
+    };
+    const order = Object.keys(data);
+    let selected = 'create';
+    let paused = false;
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+    function render(key, announce = false) {
+      selected = key;
+      const item = data[key];
+      $$('.route').forEach(button => {
+        const active = button.dataset.route === key;
+        button.classList.toggle('is-selected', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+      $('#journey-label').textContent = item.label;
+      $('#endpoint-title').textContent = item.title;
+      $('#endpoint-description').textContent = item.description;
+      $('#example').textContent = item.example;
+      $('#flow-summary').innerHTML = `<strong>Active safeguard:</strong> ${item.summary}`;
+      $('#badges').innerHTML = item.badges.map(([label, tone]) => `<span class="badge ${tone === 'ok' ? '' : tone}">${label}</span>`).join('');
+      $$('.flow-node').forEach(node => node.classList.toggle('is-on', item.nodes.includes(node.dataset.node)));
+      $$('.connector').forEach((connector, index) => connector.classList.toggle('is-on', index < item.nodes.length - 1));
+      $$('.state').forEach(state => state.classList.toggle('active', item.states.includes(state.dataset.state)));
+      replay();
+      if (announce) $('#endpoint-title').focus?.();
+    }
+    function replay() {
+      const flow = $('#flow');
+      flow.classList.remove('replay');
+      void flow.offsetWidth;
+      if (!paused) flow.classList.add('replay');
+    }
+    function toggleMotion() {
+      paused = !paused;
+      document.body.classList.toggle('motion-paused', paused);
+      $('#motion').textContent = paused ? '▶ Resume motion' : 'Ⅱ Pause motion';
+      $('#motion-label').textContent = paused ? 'Motion paused' : 'Live walkthrough';
+    }
+    $$('.route').forEach(button => button.addEventListener('click', () => render(button.dataset.route, true)));
+    $('#replay').addEventListener('click', replay);
+    $('#motion').addEventListener('click', toggleMotion);
+    window.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      const index = order.indexOf(selected);
+      const next = event.key === 'ArrowRight' ? (index + 1) % order.length : (index - 1 + order.length) % order.length;
+      render(order[next], true);
+    });
+    render('create');
+  </script>
+</body>
+</html>
