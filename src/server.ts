@@ -1,6 +1,7 @@
 import { ApiError } from "./errors.js";
 import { DeploymentService } from "./deployment-service.js";
 import { decodePathSegment } from "./path.js";
+import { SqliteDeploymentRepository } from "./sqlite-deployment-repository.js";
 import { deploymentStatuses, type DeploymentStatus } from "./types.js";
 
 const transitionPath = /^\/deployments\/([^/]+)\/transitions$/;
@@ -105,21 +106,46 @@ async function handleRequest(service: DeploymentService, request: Request): Prom
 
 interface AppOptions {
   readonly service?: DeploymentService;
+  readonly databasePath?: string;
   readonly hostname?: string;
   readonly port?: number;
 }
 
-export function createApp(options: AppOptions = {}): Bun.Server<undefined> {
-  const service = options.service ?? new DeploymentService();
-  return Bun.serve({
+export interface Application {
+  readonly url: URL;
+  stop(closeActiveConnections?: boolean): Promise<void>;
+}
+
+export function createApp(options: AppOptions = {}): Application {
+  const ownsService = options.service === undefined;
+  const service = options.service ?? new DeploymentService(
+    Date.now,
+    new SqliteDeploymentRepository(options.databasePath),
+  );
+  const server = Bun.serve({
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port ?? 0,
     fetch: (request) => handleRequest(service, request),
   });
+  let stopped = false;
+  return {
+    get url() {
+      return server.url;
+    },
+    async stop(closeActiveConnections = false) {
+      if (stopped) return;
+      stopped = true;
+      await server.stop(closeActiveConnections);
+      if (ownsService) service.close();
+    },
+  };
 }
 
 if (import.meta.main) {
   const port = parsePort(Bun.env.PORT ?? "3000");
-  const server = createApp({ port });
-  console.log(`Deploy Orchestrator API listening on ${server.url.origin}`);
+  const app = createApp({
+    port,
+    databasePath: Bun.env.DATABASE_PATH ?? "deployments.sqlite",
+  });
+  console.log(`Deploy Orchestrator API listening on ${app.url.origin}`);
 }
