@@ -1,9 +1,10 @@
 import { ApiError } from "./errors.js";
 import {
-  isSqliteBusyError,
-  isSqliteConstraintError,
-  SqliteDeploymentRepository,
-} from "./sqlite-deployment-repository.js";
+  StorageBusyError,
+  StorageConstraintError,
+  type DeploymentRepository,
+} from "./deployment-repository.js";
+import { createDefaultDeploymentRepository } from "./default-deployment-repository.js";
 import {
   deploymentStatuses,
   type Deployment,
@@ -26,7 +27,7 @@ export class DeploymentService {
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly repository = new SqliteDeploymentRepository(),
+    private readonly repository: DeploymentRepository = createDefaultDeploymentRepository(),
   ) {
     this.startedAt = now();
   }
@@ -42,10 +43,10 @@ export class DeploymentService {
     try {
       return this.repository.immediate(() => this.createInsideTransaction(service, version, idempotencyKey));
     } catch (error) {
-      if (isSqliteBusyError(error)) {
+      if (error instanceof StorageBusyError) {
         throw new ApiError(503, "Deployment storage is busy; retry the request");
       }
-      if (!isSqliteConstraintError(error)) throw error;
+      if (!(error instanceof StorageConstraintError)) throw error;
 
       try {
         return this.repository.immediate(() => {
@@ -57,7 +58,7 @@ export class DeploymentService {
           throw error;
         });
       } catch (recoveryError) {
-        if (isSqliteBusyError(recoveryError)) {
+        if (recoveryError instanceof StorageBusyError) {
           throw new ApiError(503, "Deployment storage is busy; retry the request");
         }
         throw recoveryError;
@@ -85,11 +86,8 @@ export class DeploymentService {
         return this.mustFind(id);
       });
     } catch (error) {
-      if (isSqliteBusyError(error)) {
+      if (error instanceof StorageBusyError) {
         throw new ApiError(503, "Deployment storage is busy; retry the request");
-      }
-      if (isSqliteConstraintError(error)) {
-        throw new ApiError(409, `Deployment '${id}' conflicts with persisted state`);
       }
       throw error;
     }

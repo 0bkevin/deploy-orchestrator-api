@@ -1,4 +1,12 @@
 import { Database, SQLiteError } from "bun:sqlite";
+import {
+  StorageBusyError,
+  StorageConstraintError,
+  type DeploymentRepository,
+  type IdempotencyRecord,
+  type RepositoryListQuery,
+  type RepositoryPage,
+} from "./deployment-repository.js";
 import type {
   Deployment,
   DeploymentStatus,
@@ -14,11 +22,6 @@ interface DeploymentRow {
   updatedAt: string;
 }
 
-export interface IdempotencyRecord {
-  readonly deploymentId: string;
-  readonly service: string;
-  readonly version: string;
-}
 
 interface CountRow {
   count: number;
@@ -40,28 +43,33 @@ interface SequenceRow {
   sequence: number | null;
 }
 
-export interface RepositoryListQuery {
-  readonly service?: string;
-  readonly status?: DeploymentStatus;
-  readonly limit: number;
-  readonly offset: number;
-  readonly beforeSequence?: number;
+interface TableInfoRow {
+  name: string;
+  notNull: number;
+  primaryKey: number;
 }
 
-export interface RepositoryPage {
-  readonly data: readonly Deployment[];
-  readonly lastSequence: number | null;
-  readonly hasMore: boolean;
+interface IndexListRow {
+  name: string;
+  uniqueIndex: number;
+  partial: number;
 }
 
-export function isSqliteBusyError(error: unknown): boolean {
+interface ForeignKeyRow {
+  referencedTable: string;
+  sourceColumn: string;
+  targetColumn: string;
+  onDelete: string;
+}
+
+function isSqliteBusyError(error: unknown): boolean {
   return error instanceof SQLiteError
     && (error.code === "SQLITE_BUSY"
       || error.code === "SQLITE_BUSY_SNAPSHOT"
       || error.code === "SQLITE_LOCKED");
 }
 
-export function isSqliteConstraintError(error: unknown): boolean {
+function isSqliteConstraintError(error: unknown): boolean {
   const code = error instanceof SQLiteError ? error.code : undefined;
   return typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT");
 }
@@ -118,12 +126,65 @@ const schemaVersion2 = `
   END;
 `;
 
-const currentSchemaVersion = 2;
+const activeIndexSql = `
+  CREATE UNIQUE INDEX one_active_deployment_per_service
+  ON deployments(service)
+  WHERE status IN ('queued', 'running')
+`;
 
-export class SqliteDeploymentRepository {
+const immutableTriggerSql = `
+  CREATE TRIGGER immutable_deployment_fields
+  BEFORE UPDATE OF sequence, id, service, version, created_at ON deployments
+  BEGIN
+    SELECT RAISE(ABORT, 'immutable_deployment_fields');
+  END
+`;
+
+const legalTransitionTriggerSql = `
+  CREATE TRIGGER legal_deployment_transition
+  BEFORE UPDATE OF status ON deployments
+  WHEN NOT (
+       (OLD.status = 'queued' AND NEW.status = 'running')
+    OR (OLD.status = 'running' AND NEW.status = 'succeeded')
+    OR (OLD.status = 'running' AND NEW.status = 'failed')
+    OR (OLD.status = 'succeeded' AND NEW.status = 'rolled_back')
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'illegal_deployment_transition');
+  END
+`;
+
+const schemaVersion3 = `
+  DROP INDEX IF EXISTS one_active_deployment_per_service;
+  ${activeIndexSql};
+
+  CREATE INDEX IF NOT EXISTS deployments_status_newest
+    ON deployments(status, sequence DESC);
+
+  DROP TRIGGER IF EXISTS immutable_deployment_fields;
+  ${immutableTriggerSql};
+  DROP TRIGGER IF EXISTS legal_deployment_transition;
+  ${legalTransitionTriggerSql};
+
+  CREATE TABLE idempotency_keys_version3 (
+    request_key TEXT NOT NULL PRIMARY KEY,
+    deployment_id TEXT NOT NULL,
+    service TEXT NOT NULL,
+    version TEXT NOT NULL,
+    FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE
+  );
+  INSERT INTO idempotency_keys_version3 (request_key, deployment_id, service, version)
+    SELECT request_key, deployment_id, service, version FROM idempotency_keys;
+  DROP TABLE idempotency_keys;
+  ALTER TABLE idempotency_keys_version3 RENAME TO idempotency_keys;
+`;
+
+const currentSchemaVersion = 3;
+
+export class SqliteDeploymentRepository implements DeploymentRepository {
   private readonly database: Database;
 
-  constructor(readonly databasePath = ":memory:", busyTimeoutMs = 5000) {
+  constructor(readonly databasePath = ":memory:", busyTimeoutMs = 1000) {
     if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 60_000) {
       throw new RangeError("busyTimeoutMs must be an integer between 0 and 60000");
     }
@@ -149,7 +210,13 @@ export class SqliteDeploymentRepository {
   }
 
   immediate<T>(operation: () => T): T {
-    return this.database.transaction(operation).immediate();
+    try {
+      return this.database.transaction(operation).immediate();
+    } catch (error) {
+      if (isSqliteBusyError(error)) throw new StorageBusyError(error);
+      if (isSqliteConstraintError(error)) throw new StorageConstraintError(error);
+      throw error;
+    }
   }
 
   findIdempotencyKey(key: string): IdempotencyRecord | undefined {
@@ -314,6 +381,16 @@ export class SqliteDeploymentRepository {
           this.database.run(schemaVersion2);
           this.database.run("PRAGMA user_version = 2");
         }
+        if (lockedVersion < 3) {
+          const nullKeys = this.database.query<CountRow, []>(`
+            SELECT COUNT(*) AS count FROM idempotency_keys WHERE request_key IS NULL
+          `).get()?.count ?? 0;
+          if (nullKeys > 0) {
+            throw new Error("SQLite schema contains null idempotency keys and cannot migrate safely");
+          }
+          this.database.run(schemaVersion3);
+          this.database.run("PRAGMA user_version = 3");
+        }
       }).immediate();
     }
     this.validateSchema();
@@ -326,41 +403,76 @@ export class SqliteDeploymentRepository {
   }
 
   private validateSchema(): void {
-    const deploymentColumns = new Set(this.database.query<NameRow, []>(`
-      SELECT name FROM pragma_table_info('deployments')
-    `).all().map(({ name }) => name));
-    const idempotencyColumns = new Set(this.database.query<NameRow, []>(`
-      SELECT name FROM pragma_table_info('idempotency_keys')
-    `).all().map(({ name }) => name));
-    this.requireColumns("deployments", deploymentColumns, [
-      "sequence", "id", "service", "version", "status", "created_at", "updated_at",
-    ]);
-    this.requireColumns("idempotency_keys", idempotencyColumns, [
-      "request_key", "deployment_id", "service", "version",
-    ]);
-
-    const indexSql = this.database.query<SchemaSqlRow, []>(`
-      SELECT sql FROM sqlite_master
-      WHERE type = 'index' AND name = 'one_active_deployment_per_service'
-    `).get()?.sql?.toLowerCase().replaceAll(/\s+/g, " ");
-    if (!indexSql?.includes("where status in ('queued', 'running')")) {
-      throw new Error("SQLite schema is missing the active-deployment partial unique index");
+    const deploymentColumns = this.database.query<TableInfoRow, []>(`
+      SELECT name, "notnull" AS "notNull", pk AS "primaryKey"
+      FROM pragma_table_info('deployments')
+    `).all();
+    const idempotencyColumns = this.database.query<TableInfoRow, []>(`
+      SELECT name, "notnull" AS "notNull", pk AS "primaryKey"
+      FROM pragma_table_info('idempotency_keys')
+    `).all();
+    this.requireColumn("deployments", deploymentColumns, "sequence", { primaryKey: true });
+    for (const column of ["id", "service", "version", "status", "created_at", "updated_at"]) {
+      this.requireColumn("deployments", deploymentColumns, column, { notNull: true });
+    }
+    this.requireColumn("idempotency_keys", idempotencyColumns, "request_key", {
+      notNull: true,
+      primaryKey: true,
+    });
+    for (const column of ["deployment_id", "service", "version"]) {
+      this.requireColumn("idempotency_keys", idempotencyColumns, column, { notNull: true });
     }
 
-    const foreignKey = this.database.query<NameRow, []>(`
-      SELECT "table" AS name FROM pragma_foreign_key_list('idempotency_keys')
+    const deploymentTableSql = this.readSchemaSql("table", "deployments");
+    const normalizedTableSql = this.normalizeSql(deploymentTableSql);
+    const statusCheck = "status text not null check ( status in ('queued', 'running', 'succeeded', 'failed', 'rolled_back') )";
+    if (!normalizedTableSql.includes(statusCheck)) {
+      throw new Error("SQLite deployments table is missing the canonical status constraint");
+    }
+
+    const indexes = this.database.query<IndexListRow, []>(`
+      SELECT name, "unique" AS "uniqueIndex", partial
+      FROM pragma_index_list('deployments')
+    `).all();
+    const idIsUnique = indexes.some((index) => index.uniqueIndex === 1
+      && this.indexColumns(index.name).join(",") === "id");
+    if (!idIsUnique) throw new Error("SQLite deployments table is missing the unique ID constraint");
+
+    const activeIndex = indexes.find(({ name }) => name === "one_active_deployment_per_service");
+    if (activeIndex?.uniqueIndex !== 1
+      || activeIndex.partial !== 1
+      || this.indexColumns(activeIndex.name).join(",") !== "service"
+      || this.normalizeSql(this.readSchemaSql("index", activeIndex.name)) !== this.normalizeSql(activeIndexSql)) {
+      throw new Error("SQLite schema has an invalid active-deployment partial unique index");
+    }
+    const statusIndex = indexes.find(({ name }) => name === "deployments_status_newest");
+    if (!statusIndex || this.indexColumns(statusIndex.name).join(",") !== "status,sequence") {
+      throw new Error("SQLite schema is missing the status-listing index");
+    }
+
+    const foreignKey = this.database.query<ForeignKeyRow, []>(`
+      SELECT
+        "table" AS "referencedTable",
+        "from" AS "sourceColumn",
+        "to" AS "targetColumn",
+        on_delete AS "onDelete"
+      FROM pragma_foreign_key_list('idempotency_keys')
       WHERE "from" = 'deployment_id'
-    `).get()?.name;
-    if (foreignKey !== "deployments") {
-      throw new Error("SQLite schema is missing the idempotency deployment foreign key");
+    `).get();
+    if (foreignKey?.referencedTable !== "deployments"
+      || foreignKey.sourceColumn !== "deployment_id"
+      || foreignKey.targetColumn !== "id"
+      || foreignKey.onDelete.toUpperCase() !== "CASCADE") {
+      throw new Error("SQLite schema has an invalid idempotency deployment foreign key");
     }
 
-    const triggerNames = new Set(this.database.query<NameRow, []>(`
-      SELECT name FROM sqlite_master
-      WHERE type = 'trigger' AND name IN ('immutable_deployment_fields', 'legal_deployment_transition')
-    `).all().map(({ name }) => name));
-    if (!triggerNames.has("immutable_deployment_fields") || !triggerNames.has("legal_deployment_transition")) {
-      throw new Error("SQLite schema is missing deployment integrity triggers");
+    if (this.normalizeSql(this.readSchemaSql("trigger", "immutable_deployment_fields"))
+      !== this.normalizeSql(immutableTriggerSql)) {
+      throw new Error("SQLite schema has an invalid immutable-fields trigger");
+    }
+    if (this.normalizeSql(this.readSchemaSql("trigger", "legal_deployment_transition"))
+      !== this.normalizeSql(legalTransitionTriggerSql)) {
+      throw new Error("SQLite schema has an invalid legal-transition trigger");
     }
 
     const maximum = this.database.query<SequenceRow, []>(`
@@ -373,10 +485,38 @@ export class SqliteDeploymentRepository {
     if (allocated !== null && allocated !== undefined) this.assertSafeSequence(allocated);
   }
 
-  private requireColumns(table: string, actual: ReadonlySet<string>, required: readonly string[]): void {
-    for (const column of required) {
-      if (!actual.has(column)) throw new Error(`SQLite schema table '${table}' is missing column '${column}'`);
+  private requireColumn(
+    table: string,
+    columns: readonly TableInfoRow[],
+    name: string,
+    requirements: { readonly notNull?: boolean; readonly primaryKey?: boolean },
+  ): void {
+    const column = columns.find((candidate) => candidate.name === name);
+    if (!column) throw new Error(`SQLite schema table '${table}' is missing column '${name}'`);
+    if (requirements.notNull && column.notNull !== 1) {
+      throw new Error(`SQLite schema column '${table}.${name}' must be NOT NULL`);
     }
+    if (requirements.primaryKey && column.primaryKey < 1) {
+      throw new Error(`SQLite schema column '${table}.${name}' must be a primary key`);
+    }
+  }
+
+  private indexColumns(indexName: string): string[] {
+    return this.database.query<NameRow, [string]>(`
+      SELECT name FROM pragma_index_info(?) ORDER BY seqno
+    `).all(indexName).map(({ name }) => name);
+  }
+
+  private readSchemaSql(type: "table" | "index" | "trigger", name: string): string {
+    const sql = this.database.query<SchemaSqlRow, [string, string]>(`
+      SELECT sql FROM sqlite_master WHERE type = ? AND name = ?
+    `).get(type, name)?.sql;
+    if (!sql) throw new Error(`SQLite schema is missing ${type} '${name}'`);
+    return sql;
+  }
+
+  private normalizeSql(sql: string): string {
+    return sql.trim().replace(/;$/, "").toLowerCase().replaceAll(/\s+/g, " ");
   }
 
   private assertSafeSequence(sequence: number | bigint): void {
