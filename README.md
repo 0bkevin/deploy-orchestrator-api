@@ -81,7 +81,7 @@ Creation runs inside a SQLite `BEGIN IMMEDIATE` transaction containing the idemp
 
 ## SQLite storage
 
-The embedded database stores deployment history, lifecycle state, creation sequence, and idempotency-key bindings. Foreign keys, status checks, unique IDs, a partial active-service index, and transactional writes provide defense in depth beyond application validation. The immutable auto-incrementing sequence powers deterministic newest-first ordering and stable cursor pagination. Tests use isolated in-memory or temporary SQLite databases, while the executable uses the durable `DATABASE_PATH` file.
+The embedded database stores deployment history, lifecycle state, creation sequence, and idempotency-key bindings. Foreign keys, status checks, unique IDs, a partial active-service index, and transactional writes provide defense in depth beyond application validation. Database triggers prevent immutable deployment fields from changing and reject lifecycle updates that bypass the legal state machine. Ordered migrations use `PRAGMA user_version`, re-check the version while holding the write reservation, and validate required columns, indexes, foreign keys, triggers, and safe sequence values before serving traffic. The immutable auto-incrementing sequence powers deterministic newest-first ordering and stable cursor pagination. If the configured busy timeout is exhausted, write endpoints return a retryable `503` response instead of leaking SQLite locking errors as an unexplained `500`. Tests use isolated in-memory or temporary SQLite databases, while the executable uses the durable `DATABASE_PATH` file.
 
 ## Design decisions
 
