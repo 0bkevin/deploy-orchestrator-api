@@ -1,4 +1,5 @@
 import { ApiError } from "./errors.js";
+import { SqliteDeploymentRepository } from "./sqlite-deployment-repository.js";
 import {
   deploymentStatuses,
   type Deployment,
@@ -17,54 +18,51 @@ const legalTransitions: Readonly<Record<DeploymentStatus, readonly DeploymentSta
 };
 
 export class DeploymentService {
-  private readonly deployments = new Map<string, Deployment>();
-  private readonly idempotencyKeys = new Map<string, {
-    deploymentId: string;
-    service: string;
-    version: string;
-  }>();
-  private readonly creationOrder = new Map<string, number>();
   private readonly startedAt: number;
-  private nextCreationOrder = 0;
 
-  constructor(private readonly now: () => number = Date.now) {
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly repository = new SqliteDeploymentRepository(),
+  ) {
     this.startedAt = now();
+  }
+
+  close(): void {
+    this.repository.close();
   }
 
   create(input: Record<string, unknown>, idempotencyKey?: string): Deployment {
     const service = this.requireNonEmptyString(input.service, "service");
     const version = this.requireNonEmptyString(input.version, "version");
 
-    if (idempotencyKey) {
-      const original = this.idempotencyKeys.get(idempotencyKey);
-      if (original) {
-        if (original.service !== service || original.version !== version) {
-          throw new ApiError(409, "Idempotency-Key was already used with a different payload");
+    return this.repository.immediate(() => {
+      if (idempotencyKey) {
+        const original = this.repository.findIdempotencyKey(idempotencyKey);
+        if (original) {
+          if (original.service !== service || original.version !== version) {
+            throw new ApiError(409, "Idempotency-Key was already used with a different payload");
+          }
+          return this.mustFind(original.deploymentId);
         }
-        return this.copy(this.mustFind(original.deploymentId));
       }
-    }
 
-    // This method contains no await points: in a single Bun process the check and
-    // insert are one synchronous critical section, so two HTTP handlers cannot interleave here.
-    if (this.hasInFlight(service)) {
-      throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
-    }
+      if (this.repository.hasInFlight(service)) {
+        throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
+      }
 
-    const now = new Date(this.now()).toISOString();
-    const deployment: Deployment = {
-      id: crypto.randomUUID(), service, version, status: "queued", createdAt: now, updatedAt: now,
-    };
-    this.deployments.set(deployment.id, deployment);
-    this.creationOrder.set(deployment.id, this.nextCreationOrder++);
-    if (idempotencyKey) {
-      this.idempotencyKeys.set(idempotencyKey, {
-        deploymentId: deployment.id,
+      const now = new Date(this.now()).toISOString();
+      const deployment: Deployment = {
+        id: crypto.randomUUID(),
         service,
         version,
-      });
-    }
-    return this.copy(deployment);
+        status: "queued",
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.repository.insertDeployment(deployment);
+      if (idempotencyKey) this.repository.insertIdempotencyKey(idempotencyKey, deployment);
+      return deployment;
+    });
   }
 
   transition(id: string, target: unknown): Deployment {
@@ -72,92 +70,95 @@ export class DeploymentService {
       throw new ApiError(400, "'to' must be running, succeeded, failed, or rolled_back");
     }
 
-    // Like create(), this read/validate/write sequence has no await point and is atomic in-process.
-    const deployment = this.mustFind(id);
-    const to = target as TransitionTarget;
-    if (!legalTransitions[deployment.status].includes(to)) {
-      throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
-    }
-    const updated: Deployment = { ...deployment, status: to, updatedAt: new Date(this.now()).toISOString() };
-    this.deployments.set(id, updated);
-    return this.copy(updated);
+    return this.repository.immediate(() => {
+      const deployment = this.mustFind(id);
+      const to = target as TransitionTarget;
+      if (!legalTransitions[deployment.status].includes(to)) {
+        throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
+      }
+
+      const updatedAt = new Date(this.now()).toISOString();
+      if (!this.repository.updateStatus(id, deployment.status, to, updatedAt)) {
+        throw new ApiError(409, `Deployment '${id}' changed during the transition`);
+      }
+      return this.mustFind(id);
+    });
   }
 
   list(query: ListDeploymentsQuery = {}): DeploymentPage {
     const limit = query.limit ?? 20;
     const offset = query.offset ?? 0;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "limit must be an integer between 1 and 100");
-    if (!Number.isInteger(offset) || offset < 0) throw new ApiError(400, "offset must be a non-negative integer");
-    if (query.status !== undefined && !deploymentStatuses.includes(query.status)) throw new ApiError(400, "Invalid status filter");
-    if (query.cursor !== undefined && query.offset !== undefined) throw new ApiError(400, "cursor and offset cannot be combined");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ApiError(400, "limit must be an integer between 1 and 100");
+    }
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new ApiError(400, "offset must be a non-negative integer");
+    }
+    if (query.status !== undefined && !deploymentStatuses.includes(query.status)) {
+      throw new ApiError(400, "Invalid status filter");
+    }
+    if (query.cursor !== undefined && query.offset !== undefined) {
+      throw new ApiError(400, "cursor and offset cannot be combined");
+    }
 
-    const cursorOrder = query.cursor === undefined ? undefined : this.decodeCursor(query.cursor);
-
-    const matching = [...this.deployments.values()]
-      .filter((item) => query.service === undefined || item.service === query.service)
-      .filter((item) => query.status === undefined || item.status === query.status)
-      .filter((item) => cursorOrder === undefined || this.orderOf(item) < cursorOrder)
-      .sort((a, b) => this.orderOf(b) - this.orderOf(a));
-    const pageRecords = matching.slice(offset, offset + limit);
-    const hasMore = offset + pageRecords.length < matching.length;
-    const lastRecord = pageRecords.at(-1);
-    const data = pageRecords.map((deployment) => this.copy(deployment));
-    const nextCursor = hasMore && lastRecord ? this.encodeCursor(this.orderOf(lastRecord)) : null;
-    const nextOffset = query.cursor === undefined && hasMore ? offset + data.length : null;
-    return { data, nextCursor, nextOffset };
+    const beforeSequence = query.cursor === undefined ? undefined : this.decodeCursor(query.cursor);
+    const page = this.repository.list({
+      service: query.service,
+      status: query.status,
+      limit,
+      offset,
+      beforeSequence,
+    });
+    return {
+      data: page.data,
+      nextCursor: page.hasMore && page.lastSequence !== null
+        ? this.encodeCursor(page.lastSequence)
+        : null,
+      nextOffset: query.cursor === undefined && page.hasMore
+        ? offset + page.data.length
+        : null,
+    };
   }
 
   current(service: string): Deployment {
-    const current = [...this.deployments.values()]
-      .filter((item) => item.service === service && item.status === "succeeded")
-      .sort((a, b) => this.orderOf(b) - this.orderOf(a))[0];
+    const current = this.repository.current(service);
     if (!current) throw new ApiError(404, `No current succeeded deployment for '${service}'`);
-    return this.copy(current);
+    return current;
   }
 
   health(): { status: "ok"; uptime: number; inFlight: number } {
     return {
       status: "ok",
       uptime: Math.floor((this.now() - this.startedAt) / 1000),
-      inFlight: [...this.deployments.values()].filter((item) => item.status === "queued" || item.status === "running").length,
+      inFlight: this.repository.countInFlight(),
     };
   }
 
-  private hasInFlight(service: string): boolean {
-    return [...this.deployments.values()].some((item) => item.service === service && (item.status === "queued" || item.status === "running"));
-  }
-
   private mustFind(id: string): Deployment {
-    const deployment = this.deployments.get(id);
+    const deployment = this.repository.findById(id);
     if (!deployment) throw new ApiError(404, `Deployment '${id}' was not found`);
     return deployment;
   }
 
-  private orderOf(deployment: Deployment): number {
-    return this.creationOrder.get(deployment.id) ?? -1;
-  }
-
-  private copy(deployment: Deployment): Deployment {
-    return { ...deployment };
-  }
-
-  private encodeCursor(order: number): string {
-    return `v1.${order.toString(36)}`;
+  private encodeCursor(sequence: number): string {
+    return `v1.${sequence.toString(36)}`;
   }
 
   private decodeCursor(cursor: string): number {
     const match = /^v1\.([0-9a-z]+)$/.exec(cursor);
     if (!match?.[1]) throw new ApiError(400, "cursor is invalid");
 
-    const order = Number.parseInt(match[1], 36);
-    if (!Number.isSafeInteger(order) || order.toString(36) !== match[1]) {
+    const sequence = Number.parseInt(match[1], 36);
+    if (!Number.isSafeInteger(sequence) || sequence.toString(36) !== match[1]) {
       throw new ApiError(400, "cursor is invalid");
     }
-    return order;
+    return sequence;
   }
 
   private requireNonEmptyString(value: unknown, field: string): string {
-    if (typeof value !== "string" || !value.trim()) throw new ApiError(400, `'${field}' must be a non-empty string`);
+    if (typeof value !== "string" || !value.trim()) {
+      throw new ApiError(400, `'${field}' must be a non-empty string`);
+    }
     return value.trim();
   }
 }
