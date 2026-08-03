@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, SQLiteError } from "bun:sqlite";
 import type {
   Deployment,
   DeploymentStatus,
@@ -28,6 +28,18 @@ interface UserVersionRow {
   userVersion: number;
 }
 
+interface NameRow {
+  name: string;
+}
+
+interface SchemaSqlRow {
+  sql: string | null;
+}
+
+interface SequenceRow {
+  sequence: number | null;
+}
+
 export interface RepositoryListQuery {
   readonly service?: string;
   readonly status?: DeploymentStatus;
@@ -42,7 +54,19 @@ export interface RepositoryPage {
   readonly hasMore: boolean;
 }
 
-const schema = `
+export function isSqliteBusyError(error: unknown): boolean {
+  return error instanceof SQLiteError
+    && (error.code === "SQLITE_BUSY"
+      || error.code === "SQLITE_BUSY_SNAPSHOT"
+      || error.code === "SQLITE_LOCKED");
+}
+
+export function isSqliteConstraintError(error: unknown): boolean {
+  const code = error instanceof SQLiteError ? error.code : undefined;
+  return typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT");
+}
+
+const schemaVersion1 = `
   CREATE TABLE IF NOT EXISTS deployments (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
@@ -74,17 +98,42 @@ const schema = `
     ON deployments(service, status, sequence DESC);
 `;
 
+const schemaVersion2 = `
+  CREATE TRIGGER IF NOT EXISTS immutable_deployment_fields
+  BEFORE UPDATE OF sequence, id, service, version, created_at ON deployments
+  BEGIN
+    SELECT RAISE(ABORT, 'immutable_deployment_fields');
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS legal_deployment_transition
+  BEFORE UPDATE OF status ON deployments
+  WHEN NOT (
+       (OLD.status = 'queued' AND NEW.status = 'running')
+    OR (OLD.status = 'running' AND NEW.status = 'succeeded')
+    OR (OLD.status = 'running' AND NEW.status = 'failed')
+    OR (OLD.status = 'succeeded' AND NEW.status = 'rolled_back')
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'illegal_deployment_transition');
+  END;
+`;
+
+const currentSchemaVersion = 2;
+
 export class SqliteDeploymentRepository {
   private readonly database: Database;
 
-  constructor(readonly databasePath = ":memory:") {
+  constructor(readonly databasePath = ":memory:", busyTimeoutMs = 5000) {
+    if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 60_000) {
+      throw new RangeError("busyTimeoutMs must be an integer between 0 and 60000");
+    }
     this.database = new Database(databasePath, {
       create: true,
       strict: true,
     });
     try {
       this.database.run("PRAGMA foreign_keys = ON");
-      this.database.run("PRAGMA busy_timeout = 5000");
+      this.database.run(`PRAGMA busy_timeout = ${String(busyTimeoutMs)}`);
       if (databasePath !== ":memory:" && databasePath !== "") {
         this.database.run("PRAGMA journal_mode = WAL");
       }
@@ -147,7 +196,7 @@ export class SqliteDeploymentRepository {
   }
 
   insertDeployment(deployment: Deployment): void {
-    this.database.query<never, [string, string, string, DeploymentStatus, string, string]>(`
+    const result = this.database.query<never, [string, string, string, DeploymentStatus, string, string]>(`
       INSERT INTO deployments (id, service, version, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
@@ -158,6 +207,7 @@ export class SqliteDeploymentRepository {
       deployment.createdAt,
       deployment.updatedAt,
     );
+    this.assertSafeSequence(result.lastInsertRowid);
   }
 
   updateStatus(
@@ -210,6 +260,7 @@ export class SqliteDeploymentRepository {
 
     const hasMore = rows.length > query.limit;
     const pageRows = hasMore ? rows.slice(0, query.limit) : rows;
+    for (const row of pageRows) this.assertSafeSequence(row.sequence);
     return {
       data: pageRows.map((row) => this.toDeployment(row)),
       lastSequence: pageRows.at(-1)?.sequence ?? null,
@@ -245,18 +296,94 @@ export class SqliteDeploymentRepository {
   }
 
   private migrate(): void {
-    const version = this.database.query<UserVersionRow, []>(`
+    const initialVersion = this.readSchemaVersion();
+    if (initialVersion > currentSchemaVersion) {
+      throw new Error(`Unsupported SQLite schema version ${String(initialVersion)}`);
+    }
+    if (initialVersion < currentSchemaVersion) {
+      this.database.transaction(() => {
+        const lockedVersion = this.readSchemaVersion();
+        if (lockedVersion > currentSchemaVersion) {
+          throw new Error(`Unsupported SQLite schema version ${String(lockedVersion)}`);
+        }
+        if (lockedVersion === 0) {
+          this.database.run(schemaVersion1);
+          this.database.run("PRAGMA user_version = 1");
+        }
+        if (lockedVersion < 2) {
+          this.database.run(schemaVersion2);
+          this.database.run("PRAGMA user_version = 2");
+        }
+      }).immediate();
+    }
+    this.validateSchema();
+  }
+
+  private readSchemaVersion(): number {
+    return this.database.query<UserVersionRow, []>(`
       SELECT user_version AS userVersion FROM pragma_user_version
     `).get()?.userVersion ?? 0;
-    if (version > 1) {
-      throw new Error(`Unsupported SQLite schema version ${String(version)}`);
-    }
-    if (version === 1) return;
+  }
 
-    this.database.transaction(() => {
-      this.database.run(schema);
-      this.database.run("PRAGMA user_version = 1");
-    }).immediate();
+  private validateSchema(): void {
+    const deploymentColumns = new Set(this.database.query<NameRow, []>(`
+      SELECT name FROM pragma_table_info('deployments')
+    `).all().map(({ name }) => name));
+    const idempotencyColumns = new Set(this.database.query<NameRow, []>(`
+      SELECT name FROM pragma_table_info('idempotency_keys')
+    `).all().map(({ name }) => name));
+    this.requireColumns("deployments", deploymentColumns, [
+      "sequence", "id", "service", "version", "status", "created_at", "updated_at",
+    ]);
+    this.requireColumns("idempotency_keys", idempotencyColumns, [
+      "request_key", "deployment_id", "service", "version",
+    ]);
+
+    const indexSql = this.database.query<SchemaSqlRow, []>(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'index' AND name = 'one_active_deployment_per_service'
+    `).get()?.sql?.toLowerCase().replaceAll(/\s+/g, " ");
+    if (!indexSql?.includes("where status in ('queued', 'running')")) {
+      throw new Error("SQLite schema is missing the active-deployment partial unique index");
+    }
+
+    const foreignKey = this.database.query<NameRow, []>(`
+      SELECT "table" AS name FROM pragma_foreign_key_list('idempotency_keys')
+      WHERE "from" = 'deployment_id'
+    `).get()?.name;
+    if (foreignKey !== "deployments") {
+      throw new Error("SQLite schema is missing the idempotency deployment foreign key");
+    }
+
+    const triggerNames = new Set(this.database.query<NameRow, []>(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'trigger' AND name IN ('immutable_deployment_fields', 'legal_deployment_transition')
+    `).all().map(({ name }) => name));
+    if (!triggerNames.has("immutable_deployment_fields") || !triggerNames.has("legal_deployment_transition")) {
+      throw new Error("SQLite schema is missing deployment integrity triggers");
+    }
+
+    const maximum = this.database.query<SequenceRow, []>(`
+      SELECT MAX(sequence) AS sequence FROM deployments
+    `).get()?.sequence;
+    const allocated = this.database.query<SequenceRow, []>(`
+      SELECT seq AS sequence FROM sqlite_sequence WHERE name = 'deployments'
+    `).get()?.sequence;
+    if (maximum !== null && maximum !== undefined) this.assertSafeSequence(maximum);
+    if (allocated !== null && allocated !== undefined) this.assertSafeSequence(allocated);
+  }
+
+  private requireColumns(table: string, actual: ReadonlySet<string>, required: readonly string[]): void {
+    for (const column of required) {
+      if (!actual.has(column)) throw new Error(`SQLite schema table '${table}' is missing column '${column}'`);
+    }
+  }
+
+  private assertSafeSequence(sequence: number | bigint): void {
+    const safe = typeof sequence === "bigint"
+      ? sequence <= BigInt(Number.MAX_SAFE_INTEGER)
+      : Number.isSafeInteger(sequence);
+    if (!safe) throw new Error("SQLite deployment sequence exceeds JavaScript's safe integer range");
   }
 
   private toDeployment(row: DeploymentRow): Deployment {

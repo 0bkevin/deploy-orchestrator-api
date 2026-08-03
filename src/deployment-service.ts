@@ -1,5 +1,9 @@
 import { ApiError } from "./errors.js";
-import { SqliteDeploymentRepository } from "./sqlite-deployment-repository.js";
+import {
+  isSqliteBusyError,
+  isSqliteConstraintError,
+  SqliteDeploymentRepository,
+} from "./sqlite-deployment-repository.js";
 import {
   deploymentStatuses,
   type Deployment,
@@ -35,34 +39,30 @@ export class DeploymentService {
     const service = this.requireNonEmptyString(input.service, "service");
     const version = this.requireNonEmptyString(input.version, "version");
 
-    return this.repository.immediate(() => {
-      if (idempotencyKey) {
-        const original = this.repository.findIdempotencyKey(idempotencyKey);
-        if (original) {
-          if (original.service !== service || original.version !== version) {
-            throw new ApiError(409, "Idempotency-Key was already used with a different payload");
+    try {
+      return this.repository.immediate(() => this.createInsideTransaction(service, version, idempotencyKey));
+    } catch (error) {
+      if (isSqliteBusyError(error)) {
+        throw new ApiError(503, "Deployment storage is busy; retry the request");
+      }
+      if (!isSqliteConstraintError(error)) throw error;
+
+      try {
+        return this.repository.immediate(() => {
+          const replay = this.findIdempotentReplay(service, version, idempotencyKey);
+          if (replay) return replay;
+          if (this.repository.hasInFlight(service)) {
+            throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
           }
-          return this.mustFind(original.deploymentId);
+          throw error;
+        });
+      } catch (recoveryError) {
+        if (isSqliteBusyError(recoveryError)) {
+          throw new ApiError(503, "Deployment storage is busy; retry the request");
         }
+        throw recoveryError;
       }
-
-      if (this.repository.hasInFlight(service)) {
-        throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
-      }
-
-      const now = new Date(this.now()).toISOString();
-      const deployment: Deployment = {
-        id: crypto.randomUUID(),
-        service,
-        version,
-        status: "queued",
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.repository.insertDeployment(deployment);
-      if (idempotencyKey) this.repository.insertIdempotencyKey(idempotencyKey, deployment);
-      return deployment;
-    });
+    }
   }
 
   transition(id: string, target: unknown): Deployment {
@@ -70,19 +70,29 @@ export class DeploymentService {
       throw new ApiError(400, "'to' must be running, succeeded, failed, or rolled_back");
     }
 
-    return this.repository.immediate(() => {
-      const deployment = this.mustFind(id);
-      const to = target as TransitionTarget;
-      if (!legalTransitions[deployment.status].includes(to)) {
-        throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
-      }
+    try {
+      return this.repository.immediate(() => {
+        const deployment = this.mustFind(id);
+        const to = target as TransitionTarget;
+        if (!legalTransitions[deployment.status].includes(to)) {
+          throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
+        }
 
-      const updatedAt = new Date(this.now()).toISOString();
-      if (!this.repository.updateStatus(id, deployment.status, to, updatedAt)) {
-        throw new ApiError(409, `Deployment '${id}' changed during the transition`);
+        const updatedAt = new Date(this.now()).toISOString();
+        if (!this.repository.updateStatus(id, deployment.status, to, updatedAt)) {
+          throw new ApiError(409, `Deployment '${id}' changed during the transition`);
+        }
+        return this.mustFind(id);
+      });
+    } catch (error) {
+      if (isSqliteBusyError(error)) {
+        throw new ApiError(503, "Deployment storage is busy; retry the request");
       }
-      return this.mustFind(id);
-    });
+      if (isSqliteConstraintError(error)) {
+        throw new ApiError(409, `Deployment '${id}' conflicts with persisted state`);
+      }
+      throw error;
+    }
   }
 
   list(query: ListDeploymentsQuery = {}): DeploymentPage {
@@ -132,6 +142,45 @@ export class DeploymentService {
       uptime: Math.floor((this.now() - this.startedAt) / 1000),
       inFlight: this.repository.countInFlight(),
     };
+  }
+
+  private createInsideTransaction(
+    service: string,
+    version: string,
+    idempotencyKey?: string,
+  ): Deployment {
+    const replay = this.findIdempotentReplay(service, version, idempotencyKey);
+    if (replay) return replay;
+    if (this.repository.hasInFlight(service)) {
+      throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
+    }
+
+    const now = new Date(this.now()).toISOString();
+    const deployment: Deployment = {
+      id: crypto.randomUUID(),
+      service,
+      version,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.repository.insertDeployment(deployment);
+    if (idempotencyKey) this.repository.insertIdempotencyKey(idempotencyKey, deployment);
+    return deployment;
+  }
+
+  private findIdempotentReplay(
+    service: string,
+    version: string,
+    idempotencyKey?: string,
+  ): Deployment | undefined {
+    if (!idempotencyKey) return undefined;
+    const original = this.repository.findIdempotencyKey(idempotencyKey);
+    if (!original) return undefined;
+    if (original.service !== service || original.version !== version) {
+      throw new ApiError(409, "Idempotency-Key was already used with a different payload");
+    }
+    return this.mustFind(original.deploymentId);
   }
 
   private mustFind(id: string): Deployment {
