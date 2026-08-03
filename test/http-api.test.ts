@@ -82,24 +82,26 @@ describe("Deploy Orchestrator HTTP API", () => {
   });
 
   test("deduplicates concurrent requests that share an idempotency key", async () => {
-    const responses = await Promise.all([
-      createDeployment("notifications", "1.0.0", "notifications-1"),
-      createDeployment("notifications", "1.0.0", "notifications-1"),
-    ]);
+    const responses = await Promise.all(Array.from(
+      { length: 20 },
+      () => createDeployment("notifications", "1.0.0", "notifications-1"),
+    ));
 
-    expect(responses.map(({ response }) => response.status)).toEqual([201, 201]);
-    expect(responses[0].deployment.id).toBe(responses[1].deployment.id);
+    expect(responses.every(({ response }) => response.status === 201)).toBe(true);
+    expect(new Set(responses.map(({ deployment }) => deployment.id))).toHaveLength(1);
     const page = await (await fetch(`${baseUrl}/deployments`)).json() as Page;
     expect(page.data).toHaveLength(1);
   });
 
-  test("allows only one of two concurrent creates for the same service", async () => {
-    const responses = await Promise.all([
-      post("/deployments", { service: "payments", version: "1.0.0" }),
-      post("/deployments", { service: "payments", version: "1.0.1" }),
-    ]);
+  test("allows only one of twenty concurrent creates for the same service", async () => {
+    const responses = await Promise.all(Array.from(
+      { length: 20 },
+      (_, index) => post("/deployments", { service: "payments", version: `1.0.${String(index)}` }),
+    ));
 
-    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 201)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 409)).toHaveLength(19);
     const health = await fetch(`${baseUrl}/health`);
     expect(await health.json()).toMatchObject({ status: "ok", inFlight: 1 });
   });
