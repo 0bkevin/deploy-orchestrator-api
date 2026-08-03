@@ -55,7 +55,7 @@ curl -i -X POST http://localhost:3000/deployments \
   -d '{"service":"orders","version":"1.0.0"}'
 ```
 
-A repeated request with the same idempotency key and payload returns the original deployment instead of creating a duplicate. Reusing that key with a different service or version returns `409 Conflict`.
+A repeated request with the same idempotency key and payload returns the original deployment instead of creating a duplicate. Because the key identifies the deployment record rather than a frozen HTTP response, a replay after a transition returns the same ID with its current lifecycle status. Reusing that key with a different service or version returns `409 Conflict`.
 
 ### Apply a transition
 
