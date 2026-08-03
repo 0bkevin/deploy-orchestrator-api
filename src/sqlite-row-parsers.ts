@@ -47,6 +47,23 @@ function stringField(row: object, field: string, context: string): string {
   return value;
 }
 
+function normalizedStringField(row: object, field: string, context: string): string {
+  const value = stringField(row, field, context);
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error(`Invalid SQLite ${context} row ${field}`);
+  }
+  return value;
+}
+
+function isoTimestampField(row: object, field: string, context: string): string {
+  const value = stringField(row, field, context);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value) {
+    throw new Error(`Invalid SQLite ${context} row ${field}`);
+  }
+  return value;
+}
+
 function safeIntegerField(
   row: object,
   field: string,
@@ -76,21 +93,21 @@ export function parseDeploymentRow(value: unknown): DeploymentRow {
   if (!isDeploymentStatus(status)) throw new Error("Invalid SQLite deployment row status");
   return {
     sequence: safeIntegerField(row, "sequence", "deployment", 1),
-    id: stringField(row, "id", "deployment"),
-    service: stringField(row, "service", "deployment"),
-    version: stringField(row, "version", "deployment"),
+    id: normalizedStringField(row, "id", "deployment"),
+    service: normalizedStringField(row, "service", "deployment"),
+    version: normalizedStringField(row, "version", "deployment"),
     status,
-    createdAt: stringField(row, "createdAt", "deployment"),
-    updatedAt: stringField(row, "updatedAt", "deployment"),
+    createdAt: isoTimestampField(row, "createdAt", "deployment"),
+    updatedAt: isoTimestampField(row, "updatedAt", "deployment"),
   };
 }
 
 export function parseIdempotencyRecord(value: unknown): IdempotencyRecord {
   const row = record(value, "idempotency");
   return {
-    deploymentId: stringField(row, "deploymentId", "idempotency"),
-    service: stringField(row, "service", "idempotency"),
-    version: stringField(row, "version", "idempotency"),
+    deploymentId: normalizedStringField(row, "deploymentId", "idempotency"),
+    service: normalizedStringField(row, "service", "idempotency"),
+    version: normalizedStringField(row, "version", "idempotency"),
   };
 }
 

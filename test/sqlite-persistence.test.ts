@@ -131,6 +131,84 @@ describe("SQLite persistence and constraints", () => {
     repository.close();
   });
 
+  test("rejects empty or untrimmed persisted deployment identifiers", () => {
+    const corruptions = [
+      ["id", ""],
+      ["id", " "],
+      ["service", ""],
+      ["service", "\t"],
+      ["version", ""],
+      ["version", " version "],
+    ] as const;
+
+    for (const [column, value] of corruptions) {
+      const path = temporaryDatabase();
+      const service = serviceFor(path);
+      const deployment = service.create({ service: "normalized", version: "1" });
+      const database = new Database(path, { strict: true });
+      database.run("DROP TRIGGER immutable_deployment_fields");
+      database.query<never, [string, string]>(`
+        UPDATE deployments SET ${column} = ? WHERE id = ?
+      `).run(value, deployment.id);
+      database.close(false);
+
+      expect(() => service.list()).toThrow(new RegExp(`deployment row ${column}`));
+      service.close();
+    }
+  });
+
+  test("rejects malformed or non-canonical persisted deployment timestamps", () => {
+    const corruptions = [
+      ["created_at", "createdAt", "not-a-date"],
+      ["created_at", "createdAt", "2024-01-01T00:00:00Z"],
+      ["updated_at", "updatedAt", ""],
+      ["updated_at", "updatedAt", "2024-01-01"],
+    ] as const;
+
+    for (const [column, field, value] of corruptions) {
+      const path = temporaryDatabase();
+      const service = serviceFor(path);
+      const deployment = service.create({ service: "timestamp", version: "1" });
+      const database = new Database(path, { strict: true });
+      database.run("DROP TRIGGER immutable_deployment_fields");
+      database.query<never, [string, string]>(`
+        UPDATE deployments SET ${column} = ? WHERE id = ?
+      `).run(value, deployment.id);
+      database.close(false);
+
+      expect(() => service.list()).toThrow(new RegExp(`deployment row ${field}`));
+      service.close();
+    }
+  });
+
+  test("rejects empty or untrimmed persisted idempotency strings", () => {
+    const corruptions = [
+      ["deployment_id", "deploymentId", ""],
+      ["deployment_id", "deploymentId", " missing "],
+      ["service", "service", ""],
+      ["service", "service", " "],
+      ["version", "version", ""],
+      ["version", "version", " 1"],
+    ] as const;
+
+    for (const [column, field, value] of corruptions) {
+      const path = temporaryDatabase();
+      const service = serviceFor(path);
+      service.create({ service: "idempotency", version: "1" }, "corrupt-key");
+      service.close();
+      const database = new Database(path, { strict: true });
+      database.query<never, [string, string]>(`
+        UPDATE idempotency_keys SET ${column} = ? WHERE request_key = ?
+      `).run(value, "corrupt-key");
+      database.close(false);
+
+      const repository = new SqliteDeploymentRepository(path);
+      expect(() => repository.findIdempotencyKey("corrupt-key"))
+        .toThrow(new RegExp(`idempotency row ${field}`));
+      repository.close();
+    }
+  });
+
   test("does not reserve an idempotency key when creation conflicts and rolls back", () => {
     const path = temporaryDatabase();
     const service = serviceFor(path);
