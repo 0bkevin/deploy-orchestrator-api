@@ -64,7 +64,7 @@
     .route { min-height: 70px; padding: 11px 12px; cursor: pointer; border: 1px solid transparent; border-radius: 13px; color: var(--muted); text-align: left; background: rgba(7, 18, 31, .45); transition: .25s ease; }
     .route:hover { transform: translateY(-2px); color: var(--text); background: rgba(42, 84, 120, .47); }
     .route.is-selected { border-color: rgba(87, 217, 255, .66); color: #071521; background: linear-gradient(145deg, #77dcff, #8ff2ce); box-shadow: 0 8px 24px rgba(87, 217, 255, .16); }
-    .method { display: block; margin-bottom: 5px; font: 800 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }.route .path { display: block; font: 700 12px/1.25 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    .method { display: block; margin-bottom: 5px; font: 800 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }.route .path { display: block; font: 700 11px/1.25 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 
     .workspace { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(290px, .72fr); gap: 16px; margin-top: 16px; }
     .diagram-card { position: relative; min-width: 0; overflow: hidden; padding: clamp(18px, 3vw, 30px); }
@@ -124,7 +124,7 @@
       <div class="control-header"><b id="route-selector-title">Choose a request to simulate</b><span>Use ← → keys to switch routes</span></div>
       <div class="routes" role="tablist" aria-label="API endpoints">
         <button class="route is-selected" role="tab" aria-selected="true" data-route="create"><span class="method">POST</span><span class="path">/deployments</span></button>
-        <button class="route" role="tab" aria-selected="false" data-route="transition"><span class="method">POST</span><span class="path">/:id/transitions</span></button>
+        <button class="route" role="tab" aria-selected="false" data-route="transition"><span class="method">POST</span><span class="path">/deployments/:id/transitions</span></button>
         <button class="route" role="tab" aria-selected="false" data-route="list"><span class="method">GET</span><span class="path">/deployments</span></button>
         <button class="route" role="tab" aria-selected="false" data-route="current"><span class="method">GET</span><span class="path">/services/:name/current</span></button>
         <button class="route" role="tab" aria-selected="false" data-route="health"><span class="method">GET</span><span class="path">/health</span></button>
