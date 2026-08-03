@@ -35,7 +35,7 @@ export class DeploymentService {
     this.repository.close();
   }
 
-  create(input: Record<string, unknown>, idempotencyKey?: string): Deployment {
+  create(input: Readonly<Record<string, unknown>>, idempotencyKey?: string): Deployment {
     const service = this.requireNonEmptyString(input.service, "service");
     const version = this.requireNonEmptyString(input.version, "version");
 
@@ -132,7 +132,7 @@ export class DeploymentService {
   }
 
   current(service: string): Deployment {
-    const normalizedService = service.trim();
+    const normalizedService = this.requireNonEmptyString(service, "service name");
     const current = this.repository.current(normalizedService);
     if (!current) throw new ApiError(404, `No current succeeded deployment for '${normalizedService}'`);
     return current;

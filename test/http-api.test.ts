@@ -309,6 +309,7 @@ describe("Deploy Orchestrator HTTP API", () => {
 
   test("rejects malformed payloads, filters, pagination and path encoding with useful 400s", async () => {
     expect((await post("/deployments", { service: "", version: 1 })).status).toBe(400);
+    expect((await fetch(`${baseUrl}/services/%20%20%20/current`)).status).toBe(400);
     expect((await rawPost("/deployments", "{not-json")).status).toBe(400);
     expect((await rawPost("/deployments", "[]")).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?service=`)).status).toBe(400);

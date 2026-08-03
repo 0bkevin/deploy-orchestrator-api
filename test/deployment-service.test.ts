@@ -5,6 +5,7 @@ import { decodePathSegment } from "../src/path.js";
 import { SqliteDeploymentRepository } from "../src/sqlite-deployment-repository.js";
 import {
   deploymentStatuses,
+  isTransitionTarget,
   type DeploymentStatus,
   type ListDeploymentsQuery,
   type TransitionTarget,
@@ -47,7 +48,7 @@ describe("DeploymentService", () => {
       failed: [],
       rolled_back: [],
     };
-    const targets: readonly TransitionTarget[] = ["running", "succeeded", "failed", "rolled_back"];
+    const targets = deploymentStatuses.filter(isTransitionTarget);
 
     for (const source of deploymentStatuses) {
       for (const target of targets) {
