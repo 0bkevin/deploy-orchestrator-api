@@ -110,7 +110,7 @@
         <div>
           <p class="eyebrow">Interactive architecture map</p>
           <h1>Every deployment has a safe path.</h1>
-          <p>Explore each API route and watch how validation, domain rules, in-memory safeguards and responses work together to keep a deployment lifecycle predictable.</p>
+          <p>Explore each API route and watch how validation, domain rules, SQLite transactions and responses work together to keep a deployment lifecycle durable and predictable.</p>
         </div>
         <div class="metrics" aria-label="System facts">
           <div class="metric"><b>5</b><span>API routes</span></div>
@@ -141,7 +141,7 @@
           <div class="connector is-on"><i class="signal"></i></div>
           <div class="flow-node is-on" data-node="domain"><span class="node-icon">◈</span><span class="node-title">Domain Service</span><span class="node-desc">states · invariants</span></div>
           <div class="connector is-on"><i class="signal"></i></div>
-          <div class="flow-node is-on" data-node="store"><span class="node-icon">▤</span><span class="node-title">In-memory Store</span><span class="node-desc">Map · key index</span></div>
+          <div class="flow-node is-on" data-node="store"><span class="node-icon">▤</span><span class="node-title">Embedded SQLite</span><span class="node-desc">WAL · transactions · indexes</span></div>
           <div class="connector is-on"><i class="signal"></i></div>
           <div class="flow-node is-on" data-node="response"><span class="node-icon">✓</span><span class="node-title">Response</span><span class="node-desc">200 · 201 · 4xx</span></div>
         </div>
@@ -188,9 +188,9 @@
       },
       list: {
         label: 'List deployments', title: 'List and paginate deployments',
-        description: 'Validate filters, limit and offset. The service filters, deterministically orders newest first and returns the next offset.',
-        badges: [['200 OK','ok'], ['service + status','ok'], ['offset pagination','warn']],
-        example: `GET /deployments?service=orders&status=succeeded&limit=20&offset=0\n\n→ 200 { "data": [ … ], "nextOffset": null }`,
+        description: 'Validate filters and pagination. SQLite applies indexed filters, orders by immutable creation sequence and returns a stable cursor.',
+        badges: [['200 OK','ok'], ['service + status','ok'], ['cursor + offset','warn']],
+        example: `GET /deployments?service=orders&status=succeeded&limit=20\n\n→ 200 { "data": [ … ], "nextCursor": null }`,
         summary: 'valid status filters and deterministic newest-first ordering.', nodes: ['client','router','domain','store','response'], states: []
       },
       current: {

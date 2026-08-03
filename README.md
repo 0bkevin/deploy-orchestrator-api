@@ -1,6 +1,6 @@
 # Deploy Orchestrator API
 
-A small, strongly typed Bun REST API that coordinates service deployments through an explicit lifecycle. It uses Bun's native HTTP server and test runner while prioritizing domain invariants, single-process concurrency safety, idempotency, predictable HTTP semantics, and testability over infrastructure breadth.
+A small, strongly typed Bun REST API that coordinates service deployments through an explicit lifecycle. It uses Bun's native HTTP server, SQLite driver, and test runner while prioritizing durable domain invariants, transactional concurrency safety, idempotency, predictable HTTP semantics, and testability.
 
 ## Requirements
 
@@ -13,7 +13,7 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
-The API listens on `http://localhost:3000` by default. Set another valid port with `PORT=8080 bun run start`.
+The API listens on `http://localhost:3000` and persists data to `deployments.sqlite` by default. Set another port or database location with `PORT=8080 DATABASE_PATH=./orchestrator.sqlite bun run start`.
 
 Run every quality gate with:
 
@@ -77,19 +77,23 @@ Responses contain `data`, `nextCursor`, and `nextOffset`. Prefer the opaque `nex
 
 ## Concurrency model
 
-The create operation performs its idempotency lookup, single-in-flight check, insertion, and idempotency registration synchronously with no `await` boundary. Transitions likewise perform their read, legality check, and update as one synchronous critical section. This makes both invariants race-safe inside a single Bun process, which the concurrent HTTP tests exercise with real sockets. Multi-process coordination is deliberately outside the in-memory scope described below.
+Creation runs inside a SQLite `BEGIN IMMEDIATE` transaction containing the idempotency lookup, single-in-flight check, deployment insert, and idempotency registration. A partial unique index on `service` for `queued` and `running` records independently enforces the one-active invariant. Transitions run in immediate transactions and update with the previous status in the `WHERE` clause, preventing two requests from applying against the same prior state. WAL mode and a busy timeout support concurrent readers and short serialized writes across Bun processes sharing the database file.
+
+## SQLite storage
+
+The embedded database stores deployment history, lifecycle state, creation sequence, and idempotency-key bindings. Foreign keys, status checks, unique IDs, a partial active-service index, and transactional writes provide defense in depth beyond application validation. The immutable auto-incrementing sequence powers deterministic newest-first ordering and stable cursor pagination. Tests use isolated in-memory or temporary SQLite databases, while the executable uses the durable `DATABASE_PATH` file.
 
 ## Design decisions
 
-The deployment lifecycle is represented by a closed TypeScript status union and an explicit transition table, keeping domain rules independent from HTTP routing. The service owns all mutations and returns defensive copies so callers cannot bypass the state machine by modifying stored records. Single-in-flight creation is race-safe in one Bun process because the check and insertion form one synchronous critical section without an `await` boundary. Transitions use the same synchronous read–validate–write pattern, so two competing requests cannot both apply against the same previous state. Idempotency entries bind a key to both the deployment ID and the normalized service/version payload, allowing exact replays while rejecting conflicting reuse. Pagination provides a stable opaque cursor derived from immutable creation order, while retaining offset support for basic clients. The deliberate timebox trade-off is in-memory storage: it keeps the concurrency reasoning small and testable, but sacrifices restart persistence and coordination across replicas.
+The deployment lifecycle is represented by a closed TypeScript status union and an explicit transition table, keeping domain rules independent from HTTP routing. A dedicated repository owns prepared SQL, schema initialization, and row mapping while the service retains validation and state-machine decisions. Single-in-flight creation uses an immediate transaction plus a partial unique index, making the invariant durable across processes sharing the file. Transitions use a transactional read–validate–conditional-update sequence so competing requests cannot both apply against the same previous state. Idempotency keys and normalized service/version payloads are stored transactionally with deployments, allowing durable exact replays while rejecting conflicting reuse. Pagination uses an opaque cursor derived from SQLite's immutable creation sequence while retaining offset support for basic clients. Embedded SQLite adds durable local state and stronger coordination without a database server, with the deliberate trade-off that multi-host scaling would require a networked database.
 
 ## Production on a self-hosted Ubuntu server
 
-I would run the service behind Caddy or Nginx for TLS termination, request limits, and reverse proxying. I would use a `systemd` unit or Coolify to manage the process, environment variables, restart policy, and startup on boot. GitHub Actions would run installation, typecheck, lint, and tests before promoting a versioned build artifact through CI/CD. For zero-downtime releases, I would start the new version on a second port, wait for its health check, switch the proxy upstream, and then drain the previous process. Rollback would reverse the proxy to the previously retained artifact and process while preserving backward-compatible schema changes. For multiple replicas, I would replace the in-memory maps with PostgreSQL transactions and a partial unique constraint that enforces one queued/running deployment per service. Prometheus metrics, Grafana dashboards, structured logs, and alerting on health, latency, error rate, and deployment conflicts would keep the service observable.
+I would run the service behind Caddy or Nginx for TLS termination, request limits, and reverse proxying. I would use a `systemd` unit or Coolify to manage the Bun process, database path, restart policy, and startup on boot. GitHub Actions would run frozen installation, typecheck, lint, tests, and migration checks before promoting a versioned build artifact through CI/CD. For zero-downtime releases on one host, I would checkpoint and back up SQLite, start the new version on a second port, wait for health, switch the proxy upstream, and then drain the previous process. Rollback would restore the previous artifact and, when required, its compatible database backup while migration scripts remain backward-aware. For multiple hosts or write-heavy scaling, I would migrate the repository to PostgreSQL transactions and an equivalent partial unique constraint rather than sharing SQLite over a network filesystem. Prometheus metrics, Grafana dashboards, structured logs, database-size monitoring, backup alerts, and error-rate alerts would keep the service observable.
 
 ## Tests and CI
 
-The suite uses Bun's native test runner for domain tests and real-socket HTTP integration tests. It covers every required scenario plus the complete state/target matrix, concurrent creation/transition races, conflicting idempotency payloads, stable pagination during inserts, malformed requests, current-version rollback behavior, health counts, and defensive-copy encapsulation. GitHub Actions installs Bun and runs frozen dependency installation, typecheck, typed ESLint, and the full suite on every push and pull request.
+The suite uses Bun's native test runner for domain, real-socket HTTP, and SQLite integration tests. It covers every required scenario plus the complete state/target matrix, cross-process races, durable idempotency, restart persistence, transaction rollback, schema constraints, stable pagination, current-version rollback behavior, malformed requests, and health counts. GitHub Actions installs Bun and runs frozen dependency installation, typecheck, typed ESLint, and the full suite on every push and pull request.
 
 ## Interactive architecture walkthrough
 
@@ -97,4 +101,4 @@ Open [`docs/architecture.html`](docs/architecture.html) locally in a browser for
 
 ## Deliberately excluded
 
-As requested by the exercise, the project does not implement a frontend, authentication, Docker, a database server, distributed locks, or exhaustive production infrastructure.
+As requested by the exercise, the project does not implement a frontend, authentication, Docker, a separate database server, distributed locks, or exhaustive production infrastructure.
