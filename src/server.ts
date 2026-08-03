@@ -111,12 +111,7 @@ interface AppOptions {
   readonly port?: number;
 }
 
-export interface Application {
-  readonly url: URL;
-  stop(closeActiveConnections?: boolean): Promise<void>;
-}
-
-export function createApp(options: AppOptions = {}): Application {
+export function createApp(options: AppOptions = {}): Bun.Server<undefined> {
   const ownsService = options.service === undefined;
   const service = options.service ?? new DeploymentService(
     Date.now,
@@ -127,18 +122,19 @@ export function createApp(options: AppOptions = {}): Application {
     port: options.port ?? 0,
     fetch: (request) => handleRequest(service, request),
   });
-  let stopped = false;
-  return {
-    get url() {
-      return server.url;
-    },
-    async stop(closeActiveConnections = false) {
-      if (stopped) return;
-      stopped = true;
-      await server.stop(closeActiveConnections);
-      if (ownsService) service.close();
-    },
+  const originalStop = server.stop.bind(server);
+  let shutdown: Promise<void> | undefined;
+  server.stop = (closeActiveConnections = false) => {
+    shutdown ??= (async () => {
+      try {
+        await originalStop(closeActiveConnections);
+      } finally {
+        if (ownsService) service.close();
+      }
+    })();
+    return shutdown;
   };
+  return server;
 }
 
 if (import.meta.main) {
