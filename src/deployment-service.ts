@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { ApiError } from "./errors.js";
 import {
   deploymentStatuses,
@@ -54,7 +53,7 @@ export class DeploymentService {
 
     const now = new Date(this.now()).toISOString();
     const deployment: Deployment = {
-      id: randomUUID(), service, version, status: "queued", createdAt: now, updatedAt: now,
+      id: crypto.randomUUID(), service, version, status: "queued", createdAt: now, updatedAt: now,
     };
     this.deployments.set(deployment.id, deployment);
     this.creationOrder.set(deployment.id, this.nextCreationOrder++);
@@ -143,17 +142,17 @@ export class DeploymentService {
   }
 
   private encodeCursor(order: number): string {
-    return `v1.${Buffer.from(String(order)).toString("base64url")}`;
+    return `v1.${order.toString(36)}`;
   }
 
   private decodeCursor(cursor: string): number {
-    const match = /^v1\.([A-Za-z0-9_-]+)$/.exec(cursor);
+    const match = /^v1\.([0-9a-z]+)$/.exec(cursor);
     if (!match?.[1]) throw new ApiError(400, "cursor is invalid");
 
-    const decoded = Buffer.from(match[1], "base64url").toString("utf8");
-    if (!/^\d+$/.test(decoded)) throw new ApiError(400, "cursor is invalid");
-    const order = Number(decoded);
-    if (!Number.isSafeInteger(order)) throw new ApiError(400, "cursor is invalid");
+    const order = Number.parseInt(match[1], 36);
+    if (!Number.isSafeInteger(order) || order.toString(36) !== match[1]) {
+      throw new ApiError(400, "cursor is invalid");
+    }
     return order;
   }
 
