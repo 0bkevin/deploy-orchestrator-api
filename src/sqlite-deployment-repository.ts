@@ -24,6 +24,10 @@ interface CountRow {
   count: number;
 }
 
+interface UserVersionRow {
+  userVersion: number;
+}
+
 export interface RepositoryListQuery {
   readonly service?: string;
   readonly status?: DeploymentStatus;
@@ -78,12 +82,17 @@ export class SqliteDeploymentRepository {
       create: true,
       strict: true,
     });
-    this.database.run("PRAGMA foreign_keys = ON");
-    this.database.run("PRAGMA busy_timeout = 5000");
-    if (databasePath !== ":memory:" && databasePath !== "") {
-      this.database.run("PRAGMA journal_mode = WAL");
+    try {
+      this.database.run("PRAGMA foreign_keys = ON");
+      this.database.run("PRAGMA busy_timeout = 5000");
+      if (databasePath !== ":memory:" && databasePath !== "") {
+        this.database.run("PRAGMA journal_mode = WAL");
+      }
+      this.migrate();
+    } catch (error) {
+      this.database.close(false);
+      throw error;
     }
-    this.database.run(schema);
   }
 
   close(): void {
@@ -233,6 +242,21 @@ export class SqliteDeploymentRepository {
       WHERE status IN ('queued', 'running')
     `).get();
     return row?.count ?? 0;
+  }
+
+  private migrate(): void {
+    const version = this.database.query<UserVersionRow, []>(`
+      SELECT user_version AS userVersion FROM pragma_user_version
+    `).get()?.userVersion ?? 0;
+    if (version > 1) {
+      throw new Error(`Unsupported SQLite schema version ${String(version)}`);
+    }
+    if (version === 1) return;
+
+    this.database.transaction(() => {
+      this.database.run(schema);
+      this.database.run("PRAGMA user_version = 1");
+    }).immediate();
   }
 
   private toDeployment(row: DeploymentRow): Deployment {

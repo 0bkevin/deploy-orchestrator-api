@@ -121,6 +121,22 @@ describe("SQLite persistence and constraints", () => {
     repository.close();
   });
 
+  test("applies schema migrations once and rejects unsupported future schemas", () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    repository.close();
+
+    const database = new Database(path, { strict: true });
+    const version = database.query<{ userVersion: number }, []>(`
+      SELECT user_version AS userVersion FROM pragma_user_version
+    `).get()?.userVersion;
+    expect(version).toBe(1);
+    database.run("PRAGMA user_version = 99");
+    database.close(false);
+
+    expect(() => new SqliteDeploymentRepository(path)).toThrow(/Unsupported SQLite schema version 99/);
+  });
+
   test("enforces status, active-service and foreign-key constraints in SQLite", () => {
     const path = temporaryDatabase();
     const repository = new SqliteDeploymentRepository(path);
