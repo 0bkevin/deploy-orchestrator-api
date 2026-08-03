@@ -1,27 +1,26 @@
 # Deploy Orchestrator API
 
-A small, strongly typed REST API that coordinates service deployments through an explicit lifecycle. The implementation intentionally prioritizes domain invariants, single-process concurrency safety, idempotency, predictable HTTP semantics, and testability over infrastructure breadth.
+A small, strongly typed Bun REST API that coordinates service deployments through an explicit lifecycle. It uses Bun's native HTTP server and test runner while prioritizing domain invariants, single-process concurrency safety, idempotency, predictable HTTP semantics, and testability over infrastructure breadth.
 
 ## Requirements
 
-- Node.js 22 or newer
-- npm 10 or newer
+- Bun 1.3.14 or newer
 
 ## Install, run, and verify locally
 
 ```bash
-npm ci
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
-The API listens on `http://localhost:3000` by default. Set another valid port with `PORT=8080 npm start`.
+The API listens on `http://localhost:3000` by default. Set another valid port with `PORT=8080 bun run start`.
 
 Run every quality gate with:
 
 ```bash
-npm run typecheck
-npm run lint
-npm test
+bun run typecheck
+bun run lint
+bun test
 ```
 
 ## Deployment lifecycle
@@ -78,11 +77,11 @@ Responses contain `data`, `nextCursor`, and `nextOffset`. Prefer the opaque `nex
 
 ## Concurrency model
 
-The create operation performs its idempotency lookup, single-in-flight check, insertion, and idempotency registration synchronously with no `await` boundary. Transitions likewise perform their read, legality check, and update as one synchronous critical section. This makes both invariants race-safe inside a single Node.js process, which the concurrent HTTP tests exercise with real sockets. Multi-process coordination is deliberately outside the in-memory scope described below.
+The create operation performs its idempotency lookup, single-in-flight check, insertion, and idempotency registration synchronously with no `await` boundary. Transitions likewise perform their read, legality check, and update as one synchronous critical section. This makes both invariants race-safe inside a single Bun process, which the concurrent HTTP tests exercise with real sockets. Multi-process coordination is deliberately outside the in-memory scope described below.
 
 ## Design decisions
 
-The deployment lifecycle is represented by a closed TypeScript status union and an explicit transition table, keeping domain rules independent from HTTP routing. The service owns all mutations and returns defensive copies so callers cannot bypass the state machine by modifying stored records. Single-in-flight creation is race-safe in one Node.js process because the check and insertion form one synchronous critical section without an `await` boundary. Transitions use the same synchronous read–validate–write pattern, so two competing requests cannot both apply against the same previous state. Idempotency entries bind a key to both the deployment ID and the normalized service/version payload, allowing exact replays while rejecting conflicting reuse. Pagination provides a stable opaque cursor derived from immutable creation order, while retaining offset support for basic clients. The deliberate timebox trade-off is in-memory storage: it keeps the concurrency reasoning small and testable, but sacrifices restart persistence and coordination across replicas.
+The deployment lifecycle is represented by a closed TypeScript status union and an explicit transition table, keeping domain rules independent from HTTP routing. The service owns all mutations and returns defensive copies so callers cannot bypass the state machine by modifying stored records. Single-in-flight creation is race-safe in one Bun process because the check and insertion form one synchronous critical section without an `await` boundary. Transitions use the same synchronous read–validate–write pattern, so two competing requests cannot both apply against the same previous state. Idempotency entries bind a key to both the deployment ID and the normalized service/version payload, allowing exact replays while rejecting conflicting reuse. Pagination provides a stable opaque cursor derived from immutable creation order, while retaining offset support for basic clients. The deliberate timebox trade-off is in-memory storage: it keeps the concurrency reasoning small and testable, but sacrifices restart persistence and coordination across replicas.
 
 ## Production on a self-hosted Ubuntu server
 
@@ -90,7 +89,7 @@ I would run the service behind Caddy or Nginx for TLS termination, request limit
 
 ## Tests and CI
 
-The test suite includes domain tests and real-socket HTTP integration tests. It covers every required scenario plus concurrent creation/transition races, conflicting idempotency payloads, stable pagination during inserts, malformed requests, current-version rollback behavior, health counts, and defensive-copy encapsulation. GitHub Actions runs installation, typecheck, typed ESLint, and the full suite on every push and pull request.
+The suite uses Bun's native test runner for domain tests and real-socket HTTP integration tests. It covers every required scenario plus the complete state/target matrix, concurrent creation/transition races, conflicting idempotency payloads, stable pagination during inserts, malformed requests, current-version rollback behavior, health counts, and defensive-copy encapsulation. GitHub Actions installs Bun and runs frozen dependency installation, typecheck, typed ESLint, and the full suite on every push and pull request.
 
 ## Interactive architecture walkthrough
 
