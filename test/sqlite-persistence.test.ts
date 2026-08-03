@@ -200,4 +200,36 @@ describe("SQLite persistence and constraints", () => {
       await Promise.all([firstApp.stop(true), secondApp.stop(true)]);
     }
   });
+
+  test("coordinates the one-active constraint across separate Bun processes", async () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    repository.close();
+    const fixture = new URL("./fixtures/sqlite-create-worker.ts", import.meta.url).pathname;
+    const workers = Array.from({ length: 12 }, (_, index) => Bun.spawn([
+      Bun.argv[0] ?? "bun",
+      fixture,
+      path,
+      `1.0.${String(index)}`,
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+    }));
+
+    const results = await Promise.all(workers.map(async (worker) => {
+      const outputPromise = new Response(worker.stdout).text();
+      const errorPromise = new Response(worker.stderr).text();
+      const exitCode = await worker.exited;
+      return {
+        exitCode,
+        output: (await outputPromise).trim(),
+        error: await errorPromise,
+      };
+    }));
+
+    expect(results.map(({ exitCode }) => exitCode)).toEqual(Array.from({ length: 12 }, () => 0));
+    expect(results.filter(({ output }) => output === "201")).toHaveLength(1);
+    expect(results.filter(({ output }) => output === "409")).toHaveLength(11);
+    expect(results.map(({ error }) => error).join("")).toBe("");
+  });
 });
