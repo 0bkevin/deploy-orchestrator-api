@@ -18,7 +18,11 @@ const legalTransitions: Readonly<Record<DeploymentStatus, readonly DeploymentSta
 
 export class DeploymentService {
   private readonly deployments = new Map<string, Deployment>();
-  private readonly idempotencyKeys = new Map<string, string>();
+  private readonly idempotencyKeys = new Map<string, {
+    deploymentId: string;
+    service: string;
+    version: string;
+  }>();
   private readonly creationOrder = new Map<string, number>();
   private readonly startedAt = Date.now();
   private nextCreationOrder = 0;
@@ -28,8 +32,13 @@ export class DeploymentService {
     const version = this.requireNonEmptyString(input.version, "version");
 
     if (idempotencyKey) {
-      const originalId = this.idempotencyKeys.get(idempotencyKey);
-      if (originalId) return this.mustFind(originalId);
+      const original = this.idempotencyKeys.get(idempotencyKey);
+      if (original) {
+        if (original.service !== service || original.version !== version) {
+          throw new ApiError(409, "Idempotency-Key was already used with a different payload");
+        }
+        return this.copy(this.mustFind(original.deploymentId));
+      }
     }
 
     // This method contains no await points: in a single Node process the check and
@@ -44,8 +53,14 @@ export class DeploymentService {
     };
     this.deployments.set(deployment.id, deployment);
     this.creationOrder.set(deployment.id, this.nextCreationOrder++);
-    if (idempotencyKey) this.idempotencyKeys.set(idempotencyKey, deployment.id);
-    return deployment;
+    if (idempotencyKey) {
+      this.idempotencyKeys.set(idempotencyKey, {
+        deploymentId: deployment.id,
+        service,
+        version,
+      });
+    }
+    return this.copy(deployment);
   }
 
   transition(id: string, target: unknown): Deployment {
@@ -61,7 +76,7 @@ export class DeploymentService {
     }
     const updated: Deployment = { ...deployment, status: to, updatedAt: new Date().toISOString() };
     this.deployments.set(id, updated);
-    return updated;
+    return this.copy(updated);
   }
 
   list(query: ListDeploymentsQuery = {}): { data: Deployment[]; nextOffset: number | null } {
@@ -75,7 +90,7 @@ export class DeploymentService {
       .filter((item) => !query.service || item.service === query.service)
       .filter((item) => !query.status || item.status === query.status)
       .sort((a, b) => this.orderOf(b) - this.orderOf(a));
-    const data = matching.slice(offset, offset + limit);
+    const data = matching.slice(offset, offset + limit).map((deployment) => this.copy(deployment));
     const nextOffset = offset + data.length < matching.length ? offset + data.length : null;
     return { data, nextOffset };
   }
@@ -85,7 +100,7 @@ export class DeploymentService {
       .filter((item) => item.service === service && item.status === "succeeded")
       .sort((a, b) => this.orderOf(b) - this.orderOf(a))[0];
     if (!current) throw new ApiError(404, `No current succeeded deployment for '${service}'`);
-    return current;
+    return this.copy(current);
   }
 
   health(): { status: "ok"; uptime: number; inFlight: number } {
@@ -108,6 +123,10 @@ export class DeploymentService {
 
   private orderOf(deployment: Deployment): number {
     return this.creationOrder.get(deployment.id) ?? -1;
+  }
+
+  private copy(deployment: Deployment): Deployment {
+    return { ...deployment };
   }
 
   private requireNonEmptyString(value: unknown, field: string): string {

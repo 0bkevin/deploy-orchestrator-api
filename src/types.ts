@@ -9,12 +9,12 @@ export const deploymentStatuses = [
 export type DeploymentStatus = (typeof deploymentStatuses)[number];
 
 export interface Deployment {
-  id: string;
-  service: string;
-  version: string;
-  status: DeploymentStatus;
-  createdAt: string;
-  updatedAt: string;
+  readonly id: string;
+  readonly service: string;
+  readonly version: string;
+  readonly status: DeploymentStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export type TransitionTarget = Exclude<DeploymentStatus, "queued">;

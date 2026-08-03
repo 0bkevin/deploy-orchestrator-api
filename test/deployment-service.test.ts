@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/errors.js";
 import { DeploymentService } from "../src/deployment-service.js";
 import { decodePathSegment } from "../src/path.js";
 
 describe("DeploymentService", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("enforces the state machine and rejects illegal transitions", () => {
     const service = new DeploymentService();
     const deployment = service.create({ service: "billing", version: "1.0.0" });
@@ -27,6 +31,25 @@ describe("DeploymentService", () => {
     const repeated = service.create({ service: "orders", version: "2.0.0" }, "request-123");
     expect(repeated).toEqual(first);
     expect(service.list().data).toHaveLength(1);
+  });
+
+  it("rejects an idempotency key reused with a different payload", () => {
+    const service = new DeploymentService();
+    service.create({ service: "orders", version: "2.0.0" }, "request-123");
+    expect(() => service.create(
+      { service: "payments", version: "9.0.0" },
+      "request-123",
+    )).toThrow(/different payload/);
+  });
+
+  it("does not expose mutable references to stored deployments", () => {
+    const service = new DeploymentService();
+    const deployment = service.create({ service: "catalog", version: "1.0.0" });
+    const external = deployment as { status: string };
+    external.status = "succeeded";
+
+    expect(service.list().data[0]?.status).toBe("queued");
+    expect(() => service.current("catalog")).toThrow(ApiError);
   });
 
   it("reports a rolled back deployment as not current", () => {
