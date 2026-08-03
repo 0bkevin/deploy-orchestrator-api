@@ -11,56 +11,20 @@ import type {
   Deployment,
   DeploymentStatus,
 } from "./types.js";
-
-interface DeploymentRow {
-  sequence: number;
-  id: string;
-  service: string;
-  version: string;
-  status: DeploymentStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-
-interface CountRow {
-  count: number;
-}
-
-interface UserVersionRow {
-  userVersion: number;
-}
-
-interface NameRow {
-  name: string;
-}
-
-interface SchemaSqlRow {
-  sql: string | null;
-}
-
-interface SequenceRow {
-  sequence: number | null;
-}
-
-interface TableInfoRow {
-  name: string;
-  notNull: number;
-  primaryKey: number;
-}
-
-interface IndexListRow {
-  name: string;
-  uniqueIndex: number;
-  partial: number;
-}
-
-interface ForeignKeyRow {
-  referencedTable: string;
-  sourceColumn: string;
-  targetColumn: string;
-  onDelete: string;
-}
+import {
+  parseCountRow,
+  parseDeploymentRow,
+  parseForeignKeyRow,
+  parseIdempotencyRecord,
+  parseIndexListRow,
+  parseNameRow,
+  parseSchemaSqlRow,
+  parseSequenceRow,
+  parseTableInfoRow,
+  parseUserVersionRow,
+  type DeploymentRow,
+  type TableInfoRow,
+} from "./sqlite-row-parsers.js";
 
 function isSqliteBusyError(error: unknown): boolean {
   return error instanceof SQLiteError
@@ -220,14 +184,15 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
   }
 
   findIdempotencyKey(key: string): IdempotencyRecord | undefined {
-    return this.database.query<IdempotencyRecord, [string]>(`
+    const row = this.database.query<unknown, [string]>(`
       SELECT
         deployment_id AS deploymentId,
         service,
         version
       FROM idempotency_keys
       WHERE request_key = ?
-    `).get(key) ?? undefined;
+    `).get(key);
+    return row === null ? undefined : parseIdempotencyRecord(row);
   }
 
   insertIdempotencyKey(key: string, deployment: Deployment): void {
@@ -238,7 +203,7 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
   }
 
   findById(id: string): Deployment | undefined {
-    const row = this.database.query<DeploymentRow, [string]>(`
+    const row = this.database.query<unknown, [string]>(`
       SELECT
         sequence,
         id,
@@ -250,16 +215,16 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       FROM deployments
       WHERE id = ?
     `).get(id);
-    return row ? this.toDeployment(row) : undefined;
+    return row === null ? undefined : this.toDeployment(parseDeploymentRow(row));
   }
 
   hasInFlight(service: string): boolean {
-    const row = this.database.query<CountRow, [string]>(`
+    const row = this.database.query<unknown, [string]>(`
       SELECT COUNT(*) AS count
       FROM deployments
       WHERE service = ? AND status IN ('queued', 'running')
     `).get(service);
-    return (row?.count ?? 0) > 0;
+    return row !== null && parseCountRow(row) > 0;
   }
 
   insertDeployment(deployment: Deployment): void {
@@ -310,7 +275,7 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
 
     const where = predicates.length > 0 ? `WHERE ${predicates.join(" AND ")}` : "";
     parameters.push(query.limit + 1, query.offset);
-    const rows = this.database.query<DeploymentRow, (string | number)[]>(`
+    const rows = this.database.query<unknown, (string | number)[]>(`
       SELECT
         sequence,
         id,
@@ -323,11 +288,10 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       ${where}
       ORDER BY sequence DESC
       LIMIT ? OFFSET ?
-    `).all(...parameters);
+    `).all(...parameters).map(parseDeploymentRow);
 
     const hasMore = rows.length > query.limit;
     const pageRows = hasMore ? rows.slice(0, query.limit) : rows;
-    for (const row of pageRows) this.assertSafeSequence(row.sequence);
     return {
       data: pageRows.map((row) => this.toDeployment(row)),
       lastSequence: pageRows.at(-1)?.sequence ?? null,
@@ -336,7 +300,7 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
   }
 
   current(service: string): Deployment | undefined {
-    const row = this.database.query<DeploymentRow, [string]>(`
+    const row = this.database.query<unknown, [string]>(`
       SELECT
         sequence,
         id,
@@ -350,16 +314,16 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       ORDER BY sequence DESC
       LIMIT 1
     `).get(service);
-    return row ? this.toDeployment(row) : undefined;
+    return row === null ? undefined : this.toDeployment(parseDeploymentRow(row));
   }
 
   countInFlight(): number {
-    const row = this.database.query<CountRow, []>(`
+    const row = this.database.query<unknown, []>(`
       SELECT COUNT(*) AS count
       FROM deployments
       WHERE status IN ('queued', 'running')
     `).get();
-    return row?.count ?? 0;
+    return row === null ? 0 : parseCountRow(row);
   }
 
   private migrate(): void {
@@ -382,9 +346,10 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
           this.database.run("PRAGMA user_version = 2");
         }
         if (lockedVersion < 3) {
-          const nullKeys = this.database.query<CountRow, []>(`
+          const nullKeyRow = this.database.query<unknown, []>(`
             SELECT COUNT(*) AS count FROM idempotency_keys WHERE request_key IS NULL
-          `).get()?.count ?? 0;
+          `).get();
+          const nullKeys = nullKeyRow === null ? 0 : parseCountRow(nullKeyRow);
           if (nullKeys > 0) {
             throw new Error("SQLite schema contains null idempotency keys and cannot migrate safely");
           }
@@ -397,20 +362,21 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
   }
 
   private readSchemaVersion(): number {
-    return this.database.query<UserVersionRow, []>(`
+    const row = this.database.query<unknown, []>(`
       SELECT user_version AS userVersion FROM pragma_user_version
-    `).get()?.userVersion ?? 0;
+    `).get();
+    return row === null ? 0 : parseUserVersionRow(row);
   }
 
   private validateSchema(): void {
-    const deploymentColumns = this.database.query<TableInfoRow, []>(`
+    const deploymentColumns = this.database.query<unknown, []>(`
       SELECT name, "notnull" AS "notNull", pk AS "primaryKey"
       FROM pragma_table_info('deployments')
-    `).all();
-    const idempotencyColumns = this.database.query<TableInfoRow, []>(`
+    `).all().map(parseTableInfoRow);
+    const idempotencyColumns = this.database.query<unknown, []>(`
       SELECT name, "notnull" AS "notNull", pk AS "primaryKey"
       FROM pragma_table_info('idempotency_keys')
-    `).all();
+    `).all().map(parseTableInfoRow);
     this.requireColumn("deployments", deploymentColumns, "sequence", { primaryKey: true });
     for (const column of ["id", "service", "version", "status", "created_at", "updated_at"]) {
       this.requireColumn("deployments", deploymentColumns, column, { notNull: true });
@@ -430,10 +396,10 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       throw new Error("SQLite deployments table is missing the canonical status constraint");
     }
 
-    const indexes = this.database.query<IndexListRow, []>(`
+    const indexes = this.database.query<unknown, []>(`
       SELECT name, "unique" AS "uniqueIndex", partial
       FROM pragma_index_list('deployments')
-    `).all();
+    `).all().map(parseIndexListRow);
     const idIsUnique = indexes.some((index) => index.uniqueIndex === 1
       && this.indexColumns(index.name).join(",") === "id");
     if (!idIsUnique) throw new Error("SQLite deployments table is missing the unique ID constraint");
@@ -450,7 +416,7 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       throw new Error("SQLite schema is missing the status-listing index");
     }
 
-    const foreignKey = this.database.query<ForeignKeyRow, []>(`
+    const foreignKeyRow = this.database.query<unknown, []>(`
       SELECT
         "table" AS "referencedTable",
         "from" AS "sourceColumn",
@@ -459,6 +425,7 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       FROM pragma_foreign_key_list('idempotency_keys')
       WHERE "from" = 'deployment_id'
     `).get();
+    const foreignKey = foreignKeyRow === null ? undefined : parseForeignKeyRow(foreignKeyRow);
     if (foreignKey?.referencedTable !== "deployments"
       || foreignKey.sourceColumn !== "deployment_id"
       || foreignKey.targetColumn !== "id"
@@ -475,14 +442,16 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
       throw new Error("SQLite schema has an invalid legal-transition trigger");
     }
 
-    const maximum = this.database.query<SequenceRow, []>(`
+    const maximumRow = this.database.query<unknown, []>(`
       SELECT MAX(sequence) AS sequence FROM deployments
-    `).get()?.sequence;
-    const allocated = this.database.query<SequenceRow, []>(`
+    `).get();
+    const allocatedRow = this.database.query<unknown, []>(`
       SELECT seq AS sequence FROM sqlite_sequence WHERE name = 'deployments'
-    `).get()?.sequence;
-    if (maximum !== null && maximum !== undefined) this.assertSafeSequence(maximum);
-    if (allocated !== null && allocated !== undefined) this.assertSafeSequence(allocated);
+    `).get();
+    const maximum = maximumRow === null ? null : parseSequenceRow(maximumRow);
+    const allocated = allocatedRow === null ? null : parseSequenceRow(allocatedRow);
+    if (maximum !== null) this.assertSafeSequence(maximum);
+    if (allocated !== null) this.assertSafeSequence(allocated);
   }
 
   private requireColumn(
@@ -502,15 +471,16 @@ export class SqliteDeploymentRepository implements DeploymentRepository {
   }
 
   private indexColumns(indexName: string): string[] {
-    return this.database.query<NameRow, [string]>(`
+    return this.database.query<unknown, [string]>(`
       SELECT name FROM pragma_index_info(?) ORDER BY seqno
-    `).all(indexName).map(({ name }) => name);
+    `).all(indexName).map(parseNameRow);
   }
 
   private readSchemaSql(type: "table" | "index" | "trigger", name: string): string {
-    const sql = this.database.query<SchemaSqlRow, [string, string]>(`
+    const row = this.database.query<unknown, [string, string]>(`
       SELECT sql FROM sqlite_master WHERE type = ? AND name = ?
-    `).get(type, name)?.sql;
+    `).get(type, name);
+    const sql = row === null ? null : parseSchemaSqlRow(row);
     if (!sql) throw new Error(`SQLite schema is missing ${type} '${name}'`);
     return sql;
   }

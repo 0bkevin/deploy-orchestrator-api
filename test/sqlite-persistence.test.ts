@@ -97,6 +97,40 @@ describe("SQLite persistence and constraints", () => {
     restartedService.close();
   });
 
+  test("rejects a deployment row with an unexpected SQLite value type", () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    const deployment = service.create({ service: "corrupt-deployment", version: "1" });
+    service.close();
+
+    const database = new Database(path, { strict: true });
+    database.query<never, [string]>(`
+      UPDATE deployments SET updated_at = X'00' WHERE id = ?
+    `).run(deployment.id);
+    database.close(false);
+
+    const repository = new SqliteDeploymentRepository(path);
+    expect(() => repository.findById(deployment.id)).toThrow(/deployment row updatedAt/);
+    repository.close();
+  });
+
+  test("rejects an idempotency row with an unexpected SQLite value type", () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    service.create({ service: "corrupt-idempotency", version: "1" }, "corrupt-key");
+    service.close();
+
+    const database = new Database(path, { strict: true });
+    database.query<never, [string]>(`
+      UPDATE idempotency_keys SET version = X'00' WHERE request_key = ?
+    `).run("corrupt-key");
+    database.close(false);
+
+    const repository = new SqliteDeploymentRepository(path);
+    expect(() => repository.findIdempotencyKey("corrupt-key")).toThrow(/idempotency row version/);
+    repository.close();
+  });
+
   test("does not reserve an idempotency key when creation conflicts and rolls back", () => {
     const path = temporaryDatabase();
     const service = serviceFor(path);
@@ -188,15 +222,15 @@ describe("SQLite persistence and constraints", () => {
     const migratedRepository = new SqliteDeploymentRepository(path);
     migratedRepository.close();
     const database = new Database(path, { strict: true });
-    const version = database.query<{ userVersion: number }, []>(`
+    const version = database.query<unknown, []>(`
       SELECT user_version AS userVersion FROM pragma_user_version
-    `).get()?.userVersion;
-    const triggerCount = database.query<{ count: number }, []>(`
+    `).get();
+    const triggerCount = database.query<unknown, []>(`
       SELECT COUNT(*) AS count FROM sqlite_master
       WHERE type = 'trigger' AND name IN ('immutable_deployment_fields', 'legal_deployment_transition')
-    `).get()?.count;
-    expect(version).toBe(3);
-    expect(triggerCount).toBe(2);
+    `).get();
+    expect(version).toEqual({ userVersion: 3 });
+    expect(triggerCount).toEqual({ count: 2 });
     database.run("PRAGMA user_version = 99");
     database.close(false);
 
@@ -337,21 +371,21 @@ describe("SQLite persistence and constraints", () => {
     service.close();
 
     const database = new Database(path, { strict: true });
-    const integrity = database.query<{ result: string }, []>(`
+    const integrity = database.query<unknown, []>(`
       SELECT integrity_check AS result FROM pragma_integrity_check
-    `).get()?.result;
+    `).get();
     const foreignKeyViolations = database.query<unknown, []>("PRAGMA foreign_key_check").all();
-    const journalMode = database.query<{ mode: string }, []>(`
+    const journalMode = database.query<unknown, []>(`
       SELECT journal_mode AS mode FROM pragma_journal_mode
-    `).get()?.mode;
-    const statusQueryPlan = database.query<{ detail: string }, [string]>(`
+    `).get();
+    const statusQueryPlan = database.query<unknown, [string]>(`
       EXPLAIN QUERY PLAN
       SELECT * FROM deployments WHERE status = ? ORDER BY sequence DESC
-    `).all("queued").map(({ detail }) => detail).join(" ");
-    expect(integrity).toBe("ok");
+    `).all("queued");
+    expect(integrity).toEqual({ result: "ok" });
     expect(foreignKeyViolations).toHaveLength(0);
-    expect(journalMode).toBe("wal");
-    expect(statusQueryPlan).toContain("deployments_status_newest");
+    expect(journalMode).toEqual({ mode: "wal" });
+    expect(JSON.stringify(statusQueryPlan)).toContain("deployments_status_newest");
     database.close(false);
   });
 
