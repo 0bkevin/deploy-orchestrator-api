@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { DeploymentService } from "../src/deployment-service.js";
 import { ApiError } from "../src/errors.js";
 import { createApp } from "../src/server.js";
@@ -55,7 +55,7 @@ async function runWorkers(
   fixtureName: string,
   argumentSets: readonly (readonly string[])[],
 ): Promise<WorkerResult[]> {
-  const fixture = new URL(`./fixtures/${fixtureName}`, import.meta.url).pathname;
+  const fixture = decodeURIComponent(new URL(`./fixtures/${fixtureName}`, import.meta.url).pathname);
   const workers = argumentSets.map((arguments_) => Bun.spawn([
     Bun.argv[0] ?? "bun",
     fixture,
@@ -192,7 +192,7 @@ describe("SQLite persistence and constraints", () => {
       SELECT COUNT(*) AS count FROM sqlite_master
       WHERE type = 'trigger' AND name IN ('immutable_deployment_fields', 'legal_deployment_transition')
     `).get()?.count;
-    expect(version).toBe(2);
+    expect(version).toBe(3);
     expect(triggerCount).toBe(2);
     database.run("PRAGMA user_version = 99");
     database.close(false);
@@ -204,10 +204,63 @@ describe("SQLite persistence and constraints", () => {
     const path = temporaryDatabase();
     const database = new Database(path, { create: true, strict: true });
     database.run("CREATE TABLE deployments (id TEXT)");
-    database.run("PRAGMA user_version = 2");
+    database.run("PRAGMA user_version = 3");
     database.close(false);
 
     expect(() => new SqliteDeploymentRepository(path)).toThrow(/missing column 'sequence'/);
+  });
+
+  test("rejects counterfeit current-version indexes and triggers", () => {
+    const indexPath = temporaryDatabase();
+    const indexRepository = new SqliteDeploymentRepository(indexPath);
+    indexRepository.close();
+    const indexDatabase = new Database(indexPath, { strict: true });
+    indexDatabase.run("DROP INDEX one_active_deployment_per_service");
+    indexDatabase.run(`
+      CREATE INDEX one_active_deployment_per_service ON deployments(sequence)
+      WHERE status IN ('queued', 'running')
+    `);
+    indexDatabase.close(false);
+    expect(() => new SqliteDeploymentRepository(indexPath)).toThrow(/invalid active-deployment/);
+
+    const triggerPath = temporaryDatabase();
+    const triggerRepository = new SqliteDeploymentRepository(triggerPath);
+    triggerRepository.close();
+    const triggerDatabase = new Database(triggerPath, { strict: true });
+    triggerDatabase.run("DROP TRIGGER legal_deployment_transition");
+    triggerDatabase.run(`
+      CREATE TRIGGER legal_deployment_transition AFTER INSERT ON deployments
+      BEGIN SELECT 1; END
+    `);
+    triggerDatabase.close(false);
+    expect(() => new SqliteDeploymentRepository(triggerPath)).toThrow(/invalid legal-transition trigger/);
+  });
+
+  test("repairs version-2 counterfeit integrity objects during migration", () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    repository.close();
+    const database = new Database(path, { strict: true });
+    database.run("DROP INDEX one_active_deployment_per_service");
+    database.run(`
+      CREATE INDEX one_active_deployment_per_service ON deployments(sequence)
+      WHERE status IN ('queued', 'running')
+    `);
+    database.run("DROP TRIGGER legal_deployment_transition");
+    database.run(`
+      CREATE TRIGGER legal_deployment_transition AFTER INSERT ON deployments
+      BEGIN SELECT 1; END
+    `);
+    database.run("PRAGMA user_version = 2");
+    database.close(false);
+
+    const repaired = new SqliteDeploymentRepository(path);
+    const deployment = serviceFor(path);
+    const queued = deployment.create({ service: "repaired", version: "1" });
+    expect(() => repaired.updateStatus(queued.id, "queued", "succeeded", new Date().toISOString()))
+      .toThrow(/illegal_deployment_transition/);
+    deployment.close();
+    repaired.close();
   });
 
   test("rejects persisted creation sequences outside JavaScript's safe integer range", () => {
@@ -263,6 +316,10 @@ describe("SQLite persistence and constraints", () => {
       INSERT INTO idempotency_keys (request_key, deployment_id, service, version)
       VALUES (?, ?, ?, ?)
     `).run("missing", "does-not-exist", "orders", "1")).toThrow();
+    expect(() => database.query(`
+      INSERT INTO idempotency_keys (request_key, deployment_id, service, version)
+      VALUES (?, ?, ?, ?)
+    `).run(null, activeId, "orders", "1")).toThrow();
     database.close(false);
   });
 
@@ -284,9 +341,14 @@ describe("SQLite persistence and constraints", () => {
     const journalMode = database.query<{ mode: string }, []>(`
       SELECT journal_mode AS mode FROM pragma_journal_mode
     `).get()?.mode;
+    const statusQueryPlan = database.query<{ detail: string }, [string]>(`
+      EXPLAIN QUERY PLAN
+      SELECT * FROM deployments WHERE status = ? ORDER BY sequence DESC
+    `).all("queued").map(({ detail }) => detail).join(" ");
     expect(integrity).toBe("ok");
     expect(foreignKeyViolations).toHaveLength(0);
     expect(journalMode).toBe("wal");
+    expect(statusQueryPlan).toContain("deployments_status_newest");
     database.close(false);
   });
 
@@ -316,6 +378,34 @@ describe("SQLite persistence and constraints", () => {
       service.close();
       locker.run("ROLLBACK");
       locker.close(false);
+    }
+  });
+
+  test("does not disguise unexpected constraint corruption as a business 409", async () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    const deployment = service.create({ service: "corrupt-trigger", version: "1" });
+    const app = createApp({ service });
+    const database = new Database(path, { strict: true });
+    database.run("DROP TRIGGER legal_deployment_transition");
+    database.run(`
+      CREATE TRIGGER legal_deployment_transition BEFORE UPDATE OF status ON deployments
+      BEGIN SELECT RAISE(ABORT, 'corrupt_trigger'); END
+    `);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await post(
+        app.url.origin,
+        `/deployments/${deployment.id}/transitions`,
+        { to: "running" },
+      );
+      expect(response.status).toBe(500);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+      database.close(false);
+      await app.stop(true);
+      service.close();
     }
   });
 
@@ -360,6 +450,25 @@ describe("SQLite persistence and constraints", () => {
     const secondStop = app.stop(true);
     expect(secondStop).toBe(firstStop);
     await firstStop;
+  });
+
+  test("closes owned SQLite storage when Bun server startup fails", async () => {
+    const occupied = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("occupied"),
+    });
+    const closeSpy = spyOn(DeploymentService.prototype, "close");
+    try {
+      expect(() => createApp({
+        databasePath: temporaryDatabase(),
+        port: occupied.port,
+      })).toThrow();
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      closeSpy.mockRestore();
+      await occupied.stop(true);
+    }
   });
 
   test("coordinates the one-active constraint across separate server connections", async () => {
