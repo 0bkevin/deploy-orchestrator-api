@@ -173,6 +173,43 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(filtered.data[0]?.id).toBe(latest.deployment.id);
   });
 
+  test("filters every supported deployment status and combines service with status", async () => {
+    const queued = await createDeployment("queued-service", "1");
+    const running = await createDeployment("running-service", "1");
+    await transition(running.deployment.id, "running");
+    const succeeded = await createDeployment("succeeded-service", "1");
+    await transition(succeeded.deployment.id, "running");
+    await transition(succeeded.deployment.id, "succeeded");
+    const failed = await createDeployment("failed-service", "1");
+    await transition(failed.deployment.id, "running");
+    await transition(failed.deployment.id, "failed");
+    const rolledBack = await createDeployment("rolled-service", "1");
+    await transition(rolledBack.deployment.id, "running");
+    await transition(rolledBack.deployment.id, "succeeded");
+    await transition(rolledBack.deployment.id, "rolled_back");
+
+    const expected = new Map([
+      ["queued", queued.deployment.id],
+      ["running", running.deployment.id],
+      ["succeeded", succeeded.deployment.id],
+      ["failed", failed.deployment.id],
+      ["rolled_back", rolledBack.deployment.id],
+    ]);
+    for (const [status, id] of expected) {
+      const page = await (await fetch(`${baseUrl}/deployments?status=${status}`)).json() as Page;
+      expect(page.data.map((deployment) => deployment.id)).toEqual([id]);
+    }
+
+    const combined = await (await fetch(
+      `${baseUrl}/deployments?service=succeeded-service&status=succeeded`,
+    )).json() as Page;
+    expect(combined.data.map(({ id }) => id)).toEqual([succeeded.deployment.id]);
+    const mismatch = await (await fetch(
+      `${baseUrl}/deployments?service=succeeded-service&status=failed`,
+    )).json() as Page;
+    expect(mismatch.data).toHaveLength(0);
+  });
+
   test("keeps cursor pagination stable when newer deployments are inserted", async () => {
     const oldest = await createDeployment("one", "1");
     await createDeployment("two", "2");
