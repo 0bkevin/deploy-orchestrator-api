@@ -117,11 +117,17 @@ export function createApp(options: AppOptions = {}): Bun.Server<undefined> {
     Date.now,
     new SqliteDeploymentRepository(options.databasePath),
   );
-  const server = Bun.serve({
-    hostname: options.hostname ?? "127.0.0.1",
-    port: options.port ?? 0,
-    fetch: (request) => handleRequest(service, request),
-  });
+  let server: Bun.Server<undefined>;
+  try {
+    server = Bun.serve({
+      hostname: options.hostname ?? "127.0.0.1",
+      port: options.port ?? 0,
+      fetch: (request) => handleRequest(service, request),
+    });
+  } catch (error) {
+    if (ownsService) service.close();
+    throw error;
+  }
   const originalStop = server.stop.bind(server);
   let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections = false) => {
