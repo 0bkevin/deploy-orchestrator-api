@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { DeploymentService } from "../src/deployment-service.js";
+import { ApiError } from "../src/errors.js";
 import { createApp } from "../src/server.js";
 import { SqliteDeploymentRepository } from "../src/sqlite-deployment-repository.js";
 import type { Deployment, DeploymentPage } from "../src/types.js";
@@ -44,6 +45,37 @@ async function post(baseUrl: string, path: string, body: unknown, headers: Recor
   });
 }
 
+interface WorkerResult {
+  readonly exitCode: number;
+  readonly output: string;
+  readonly error: string;
+}
+
+async function runWorkers(
+  fixtureName: string,
+  argumentSets: readonly (readonly string[])[],
+): Promise<WorkerResult[]> {
+  const fixture = new URL(`./fixtures/${fixtureName}`, import.meta.url).pathname;
+  const workers = argumentSets.map((arguments_) => Bun.spawn([
+    Bun.argv[0] ?? "bun",
+    fixture,
+    ...arguments_,
+  ], {
+    stdout: "pipe",
+    stderr: "pipe",
+  }));
+  return Promise.all(workers.map(async (worker) => {
+    const outputPromise = new Response(worker.stdout).text();
+    const errorPromise = new Response(worker.stderr).text();
+    const exitCode = await worker.exited;
+    return {
+      exitCode,
+      output: (await outputPromise).trim(),
+      error: await errorPromise,
+    };
+  }));
+}
+
 describe("SQLite persistence and constraints", () => {
   test("persists deployments and idempotency keys across service restarts", () => {
     const path = temporaryDatabase();
@@ -62,6 +94,24 @@ describe("SQLite persistence and constraints", () => {
       "orders-1",
     )).toThrow(/different payload/);
     restartedService.close();
+  });
+
+  test("does not reserve an idempotency key when creation conflicts and rolls back", () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    const blocker = service.create({ service: "orders", version: "1" });
+    expect(() => service.create(
+      { service: "orders", version: "2" },
+      "retry-after-conflict",
+    )).toThrow(/already has/);
+    service.transition(blocker.id, "running");
+    service.transition(blocker.id, "failed");
+    const retried = service.create(
+      { service: "orders", version: "2" },
+      "retry-after-conflict",
+    );
+    expect(retried).toMatchObject({ service: "orders", version: "2", status: "queued" });
+    service.close();
   });
 
   test("restores current-deployment history after a database restart", () => {
@@ -121,20 +171,63 @@ describe("SQLite persistence and constraints", () => {
     repository.close();
   });
 
-  test("applies schema migrations once and rejects unsupported future schemas", () => {
+  test("applies ordered schema migrations and rejects unsupported future schemas", () => {
     const path = temporaryDatabase();
     const repository = new SqliteDeploymentRepository(path);
     repository.close();
 
+    const oldDatabase = new Database(path, { strict: true });
+    oldDatabase.run("DROP TRIGGER immutable_deployment_fields");
+    oldDatabase.run("DROP TRIGGER legal_deployment_transition");
+    oldDatabase.run("PRAGMA user_version = 1");
+    oldDatabase.close(false);
+
+    const migratedRepository = new SqliteDeploymentRepository(path);
+    migratedRepository.close();
     const database = new Database(path, { strict: true });
     const version = database.query<{ userVersion: number }, []>(`
       SELECT user_version AS userVersion FROM pragma_user_version
     `).get()?.userVersion;
-    expect(version).toBe(1);
+    const triggerCount = database.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'trigger' AND name IN ('immutable_deployment_fields', 'legal_deployment_transition')
+    `).get()?.count;
+    expect(version).toBe(2);
+    expect(triggerCount).toBe(2);
     database.run("PRAGMA user_version = 99");
     database.close(false);
 
     expect(() => new SqliteDeploymentRepository(path)).toThrow(/Unsupported SQLite schema version 99/);
+  });
+
+  test("rejects a malformed database that falsely claims the current schema version", () => {
+    const path = temporaryDatabase();
+    const database = new Database(path, { create: true, strict: true });
+    database.run("CREATE TABLE deployments (id TEXT)");
+    database.run("PRAGMA user_version = 2");
+    database.close(false);
+
+    expect(() => new SqliteDeploymentRepository(path)).toThrow(/missing column 'sequence'/);
+  });
+
+  test("rejects persisted creation sequences outside JavaScript's safe integer range", () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    const deployment: Deployment = {
+      id: crypto.randomUUID(),
+      service: "sequence-guard",
+      version: "1",
+      status: "succeeded",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    repository.insertDeployment(deployment);
+    repository.close();
+    const database = new Database(path, { strict: true });
+    database.run("UPDATE sqlite_sequence SET seq = 9007199254740992 WHERE name = 'deployments'");
+    database.close(false);
+
+    expect(() => new SqliteDeploymentRepository(path)).toThrow(/safe integer range/);
   });
 
   test("enforces status, active-service and foreign-key constraints in SQLite", () => {
@@ -150,10 +243,17 @@ describe("SQLite persistence and constraints", () => {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(crypto.randomUUID(), "bad", "1", "unknown", now, now)).toThrow();
 
+    const activeId = crypto.randomUUID();
     database.query(`
       INSERT INTO deployments (id, service, version, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(crypto.randomUUID(), "orders", "1", "queued", now, now);
+    `).run(activeId, "orders", "1", "queued", now, now);
+    expect(() => database.query(`
+      UPDATE deployments SET status = 'succeeded' WHERE id = ?
+    `).run(activeId)).toThrow(/illegal_deployment_transition/);
+    expect(() => database.query(`
+      UPDATE deployments SET service = 'renamed' WHERE id = ?
+    `).run(activeId)).toThrow(/immutable_deployment_fields/);
     expect(() => database.query(`
       INSERT INTO deployments (id, service, version, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -164,6 +264,59 @@ describe("SQLite persistence and constraints", () => {
       VALUES (?, ?, ?, ?)
     `).run("missing", "does-not-exist", "orders", "1")).toThrow();
     database.close(false);
+  });
+
+  test("binds SQL-like values literally and passes SQLite integrity checks", () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    const sqlLikeService = "orders'; DROP TABLE deployments; --";
+    const sqlLikeKey = "key'); DELETE FROM idempotency_keys; --";
+    const created = service.create({ service: sqlLikeService, version: "v'1" }, sqlLikeKey);
+    expect(service.list({ service: sqlLikeService }).data.map(({ id }) => id)).toEqual([created.id]);
+    expect(service.create({ service: sqlLikeService, version: "v'1" }, sqlLikeKey).id).toBe(created.id);
+    service.close();
+
+    const database = new Database(path, { strict: true });
+    const integrity = database.query<{ result: string }, []>(`
+      SELECT integrity_check AS result FROM pragma_integrity_check
+    `).get()?.result;
+    const foreignKeyViolations = database.query<unknown, []>("PRAGMA foreign_key_check").all();
+    const journalMode = database.query<{ mode: string }, []>(`
+      SELECT journal_mode AS mode FROM pragma_journal_mode
+    `).get()?.mode;
+    expect(integrity).toBe("ok");
+    expect(foreignKeyViolations).toHaveLength(0);
+    expect(journalMode).toBe("wal");
+    database.close(false);
+  });
+
+  test("translates SQLite write contention into a retryable 503 instead of a 500", async () => {
+    const path = temporaryDatabase();
+    const bootstrap = new SqliteDeploymentRepository(path);
+    bootstrap.close();
+    const locker = new Database(path, { strict: true });
+    locker.run("BEGIN IMMEDIATE");
+    const service = new DeploymentService(Date.now, new SqliteDeploymentRepository(path, 0));
+    let caught: unknown;
+    try {
+      service.create({ service: "busy", version: "1" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).statusCode).toBe(503);
+
+    const app = createApp({ service });
+    try {
+      const response = await post(app.url.origin, "/deployments", { service: "busy", version: "1" });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "Deployment storage is busy; retry the request" });
+    } finally {
+      await app.stop(true);
+      service.close();
+      locker.run("ROLLBACK");
+      locker.close(false);
+    }
   });
 
   test("persists state through a complete Bun server stop and restart", async () => {
@@ -197,6 +350,18 @@ describe("SQLite persistence and constraints", () => {
     }
   });
 
+  test("preserves the Bun.Server contract and makes shutdown idempotent", async () => {
+    const app = createApp({ databasePath: temporaryDatabase() });
+    expect(app.port).toBeGreaterThan(0);
+    expect(app.hostname).toBe("127.0.0.1");
+    expect(typeof app.reload).toBe("function");
+    expect(typeof app.ref).toBe("function");
+    const firstStop = app.stop(true);
+    const secondStop = app.stop(true);
+    expect(secondStop).toBe(firstStop);
+    await firstStop;
+  });
+
   test("coordinates the one-active constraint across separate server connections", async () => {
     const path = temporaryDatabase();
     const firstApp = createApp({ databasePath: path });
@@ -221,31 +386,69 @@ describe("SQLite persistence and constraints", () => {
     const path = temporaryDatabase();
     const repository = new SqliteDeploymentRepository(path);
     repository.close();
-    const fixture = new URL("./fixtures/sqlite-create-worker.ts", import.meta.url).pathname;
-    const workers = Array.from({ length: 12 }, (_, index) => Bun.spawn([
-      Bun.argv[0] ?? "bun",
-      fixture,
-      path,
-      `1.0.${String(index)}`,
-    ], {
-      stdout: "pipe",
-      stderr: "pipe",
-    }));
-
-    const results = await Promise.all(workers.map(async (worker) => {
-      const outputPromise = new Response(worker.stdout).text();
-      const errorPromise = new Response(worker.stderr).text();
-      const exitCode = await worker.exited;
-      return {
-        exitCode,
-        output: (await outputPromise).trim(),
-        error: await errorPromise,
-      };
-    }));
+    const results = await runWorkers(
+      "sqlite-create-worker.ts",
+      Array.from({ length: 12 }, (_, index) => [path, `1.0.${String(index)}`]),
+    );
 
     expect(results.map(({ exitCode }) => exitCode)).toEqual(Array.from({ length: 12 }, () => 0));
     expect(results.filter(({ output }) => output === "201")).toHaveLength(1);
     expect(results.filter(({ output }) => output === "409")).toHaveLength(11);
     expect(results.map(({ error }) => error).join("")).toBe("");
+  });
+
+  test("deduplicates one idempotent deployment across separate Bun processes", async () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    repository.close();
+    const results = await runWorkers(
+      "sqlite-idempotency-worker.ts",
+      Array.from({ length: 12 }, () => [path, "1.0.0", "shared-key"]),
+    );
+
+    expect(results.map(({ exitCode }) => exitCode)).toEqual(Array.from({ length: 12 }, () => 0));
+    expect(results.filter(({ output }) => output.startsWith("201:"))).toHaveLength(12);
+    expect(new Set(results.map(({ output }) => output)).size).toBe(1);
+    expect(results.map(({ error }) => error).join("")).toBe("");
+  });
+
+  test("rejects conflicting idempotency payloads across separate Bun processes", async () => {
+    const path = temporaryDatabase();
+    const repository = new SqliteDeploymentRepository(path);
+    repository.close();
+    const results = await runWorkers(
+      "sqlite-idempotency-worker.ts",
+      Array.from({ length: 12 }, (_, index) => [path, `1.0.${String(index)}`, "conflicting-key"]),
+    );
+
+    expect(results.map(({ exitCode }) => exitCode)).toEqual(Array.from({ length: 12 }, () => 0));
+    expect(results.filter(({ output }) => output.startsWith("201:"))).toHaveLength(1);
+    expect(results.filter(({ output }) => output === "409")).toHaveLength(11);
+    expect(results.map(({ error }) => error).join("")).toBe("");
+  });
+
+  test("allows only one competing terminal transition across separate Bun processes", async () => {
+    const path = temporaryDatabase();
+    const service = serviceFor(path);
+    const deployment = service.create({ service: "transition-race", version: "1" });
+    service.transition(deployment.id, "running");
+    service.close();
+    const results = await runWorkers(
+      "sqlite-transition-worker.ts",
+      Array.from({ length: 12 }, (_, index) => [
+        path,
+        deployment.id,
+        index % 2 === 0 ? "succeeded" : "failed",
+      ]),
+    );
+
+    expect(results.map(({ exitCode }) => exitCode)).toEqual(Array.from({ length: 12 }, () => 0));
+    expect(results.filter(({ output }) => output.startsWith("200:"))).toHaveLength(1);
+    expect(results.filter(({ output }) => output === "409")).toHaveLength(11);
+    expect(results.map(({ error }) => error).join("")).toBe("");
+    const reopenedService = serviceFor(path);
+    const finalStatus = reopenedService.list().data[0]?.status ?? "missing";
+    expect(["succeeded", "failed"]).toContain(finalStatus);
+    reopenedService.close();
   });
 });
