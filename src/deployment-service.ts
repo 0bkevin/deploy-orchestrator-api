@@ -25,8 +25,12 @@ export class DeploymentService {
     version: string;
   }>();
   private readonly creationOrder = new Map<string, number>();
-  private readonly startedAt = Date.now();
+  private readonly startedAt: number;
   private nextCreationOrder = 0;
+
+  constructor(private readonly now: () => number = Date.now) {
+    this.startedAt = now();
+  }
 
   create(input: Record<string, unknown>, idempotencyKey?: string): Deployment {
     const service = this.requireNonEmptyString(input.service, "service");
@@ -42,13 +46,13 @@ export class DeploymentService {
       }
     }
 
-    // This method contains no await points: in a single Node process the check and
+    // This method contains no await points: in a single Bun process the check and
     // insert are one synchronous critical section, so two HTTP handlers cannot interleave here.
     if (this.hasInFlight(service)) {
       throw new ApiError(409, `Service '${service}' already has a queued or running deployment`);
     }
 
-    const now = new Date().toISOString();
+    const now = new Date(this.now()).toISOString();
     const deployment: Deployment = {
       id: randomUUID(), service, version, status: "queued", createdAt: now, updatedAt: now,
     };
@@ -75,7 +79,7 @@ export class DeploymentService {
     if (!legalTransitions[deployment.status].includes(to)) {
       throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
     }
-    const updated: Deployment = { ...deployment, status: to, updatedAt: new Date().toISOString() };
+    const updated: Deployment = { ...deployment, status: to, updatedAt: new Date(this.now()).toISOString() };
     this.deployments.set(id, updated);
     return this.copy(updated);
   }
@@ -115,7 +119,7 @@ export class DeploymentService {
   health(): { status: "ok"; uptime: number; inFlight: number } {
     return {
       status: "ok",
-      uptime: Math.floor((Date.now() - this.startedAt) / 1000),
+      uptime: Math.floor((this.now() - this.startedAt) / 1000),
       inFlight: [...this.deployments.values()].filter((item) => item.status === "queued" || item.status === "running").length,
     };
   }

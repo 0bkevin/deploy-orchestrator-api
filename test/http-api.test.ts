@@ -1,6 +1,4 @@
-import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createApp } from "../src/server.js";
 import type { Deployment } from "../src/types.js";
 
@@ -11,23 +9,16 @@ interface Page {
 }
 
 describe("Deploy Orchestrator HTTP API", () => {
-  let server: Server;
+  let server: ReturnType<typeof createApp>;
   let baseUrl: string;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     server = createApp();
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${String(address.port)}`;
+    baseUrl = server.url.origin;
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
+    await server.stop(true);
   });
 
   async function post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
@@ -61,7 +52,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     return post(`/deployments/${id}/transitions`, { to });
   }
 
-  it("creates queued deployments and deduplicates repeated idempotency keys", async () => {
+  test("creates queued deployments and deduplicates repeated idempotency keys", async () => {
     const first = await createDeployment("orders", "1.0.0", "orders-1");
     const replay = await createDeployment("orders", "1.0.0", "orders-1");
 
@@ -78,7 +69,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(page.data).toHaveLength(1);
   });
 
-  it("rejects an idempotency key reused with a different payload", async () => {
+  test("rejects an idempotency key reused with a different payload", async () => {
     await createDeployment("orders", "1.0.0", "shared-key");
     const conflict = await post(
       "/deployments",
@@ -90,7 +81,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(errorBody.error).toMatch(/different payload/i);
   });
 
-  it("deduplicates concurrent requests that share an idempotency key", async () => {
+  test("deduplicates concurrent requests that share an idempotency key", async () => {
     const responses = await Promise.all([
       createDeployment("notifications", "1.0.0", "notifications-1"),
       createDeployment("notifications", "1.0.0", "notifications-1"),
@@ -102,7 +93,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(page.data).toHaveLength(1);
   });
 
-  it("allows only one of two concurrent creates for the same service", async () => {
+  test("allows only one of two concurrent creates for the same service", async () => {
     const responses = await Promise.all([
       post("/deployments", { service: "payments", version: "1.0.0" }),
       post("/deployments", { service: "payments", version: "1.0.1" }),
@@ -113,7 +104,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(await health.json()).toMatchObject({ status: "ok", inFlight: 1 });
   });
 
-  it("applies transitions atomically and returns the required error codes", async () => {
+  test("applies transitions atomically and returns the required error codes", async () => {
     const { deployment } = await createDeployment("billing", "2.0.0");
     const concurrent = await Promise.all([
       transition(deployment.id, "running"),
@@ -131,7 +122,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(terminal.map((response) => response.status).sort()).toEqual([200, 409]);
   });
 
-  it("lists newest first with combinable filters and offset pagination", async () => {
+  test("lists newest first with combinable filters and offset pagination", async () => {
     const first = await createDeployment("catalog", "1.0.0");
     await transition(first.deployment.id, "running");
     await transition(first.deployment.id, "succeeded");
@@ -155,7 +146,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(filtered.data[0]?.id).toBe(latest.deployment.id);
   });
 
-  it("keeps cursor pagination stable when newer deployments are inserted", async () => {
+  test("keeps cursor pagination stable when newer deployments are inserted", async () => {
     const oldest = await createDeployment("one", "1");
     await createDeployment("two", "2");
     const newest = await createDeployment("three", "3");
@@ -171,7 +162,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(secondPage.nextCursor).toBeNull();
   });
 
-  it("restores the previous succeeded deployment after the latest is rolled back", async () => {
+  test("restores the previous succeeded deployment after the latest is rolled back", async () => {
     const first = await createDeployment("web", "4.1.0");
     await transition(first.deployment.id, "running");
     await transition(first.deployment.id, "succeeded");
@@ -189,7 +180,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(await restored.json()).toMatchObject({ id: first.deployment.id, status: "succeeded" });
   });
 
-  it("reports uptime and the exact queued plus running count", async () => {
+  test("reports uptime and the exact queued plus running count", async () => {
     const initial = await fetch(`${baseUrl}/health`);
     expect(await initial.json()).toMatchObject({ status: "ok", inFlight: 0 });
 
@@ -203,7 +194,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(finalHealth.uptime).toBeGreaterThanOrEqual(0);
   });
 
-  it("rejects malformed payloads, filters, pagination and path encoding with useful 400s", async () => {
+  test("rejects malformed payloads, filters, pagination and path encoding with useful 400s", async () => {
     expect((await post("/deployments", { service: "", version: 1 })).status).toBe(400);
     expect((await rawPost("/deployments", "{not-json")).status).toBe(400);
     expect((await rawPost("/deployments", "[]")).status).toBe(400);
