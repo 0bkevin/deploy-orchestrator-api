@@ -6,7 +6,7 @@ const databasePath = Bun.argv[2];
 const version = Bun.argv[3];
 if (!databasePath || !version) throw new Error("database path and version are required");
 
-const service = new DeploymentService(Date.now, new SqliteDeploymentRepository(databasePath));
+const service = new DeploymentService(new SqliteDeploymentRepository(databasePath));
 try {
   service.create({ service: "multi-process", version });
   console.log("201");

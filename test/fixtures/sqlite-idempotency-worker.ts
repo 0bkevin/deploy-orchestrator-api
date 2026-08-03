@@ -9,7 +9,7 @@ if (!databasePath || !version || !idempotencyKey) {
   throw new Error("database path, version, and idempotency key are required");
 }
 
-const service = new DeploymentService(Date.now, new SqliteDeploymentRepository(databasePath));
+const service = new DeploymentService(new SqliteDeploymentRepository(databasePath));
 try {
   const deployment = service.create(
     { service: "multi-process-idempotency", version },

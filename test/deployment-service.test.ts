@@ -2,12 +2,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { ApiError } from "../src/errors.js";
 import { DeploymentService } from "../src/deployment-service.js";
 import { decodePathSegment } from "../src/path.js";
-import type { DeploymentStatus, TransitionTarget } from "../src/types.js";
+import { SqliteDeploymentRepository } from "../src/sqlite-deployment-repository.js";
+import {
+  deploymentStatuses,
+  type DeploymentStatus,
+  type ListDeploymentsQuery,
+  type TransitionTarget,
+} from "../src/types.js";
 
 const services: DeploymentService[] = [];
 
 function createService(now: () => number = Date.now): DeploymentService {
-  const service = new DeploymentService(now);
+  const service = new DeploymentService(new SqliteDeploymentRepository(), now);
   services.push(service);
   return service;
 }
@@ -43,7 +49,7 @@ describe("DeploymentService", () => {
     };
     const targets: readonly TransitionTarget[] = ["running", "succeeded", "failed", "rolled_back"];
 
-    for (const source of Object.keys(paths) as DeploymentStatus[]) {
+    for (const source of deploymentStatuses) {
       for (const target of targets) {
         const service = createService();
         const deployment = service.create({ service: `${source}-${target}`, version: "1" });
@@ -86,8 +92,7 @@ describe("DeploymentService", () => {
   test("does not expose mutable references to stored deployments", () => {
     const service = createService();
     const deployment = service.create({ service: "catalog", version: "1.0.0" });
-    const external = deployment as { status: string };
-    external.status = "succeeded";
+    Reflect.set(deployment, "status", "succeeded");
 
     expect(service.list().data[0]?.status).toBe("queued");
     expect(() => service.current("catalog")).toThrow(ApiError);
@@ -119,6 +124,8 @@ describe("DeploymentService", () => {
 
   test("rejects an empty status filter instead of silently ignoring it", () => {
     const service = createService();
-    expect(() => service.list({ status: "" as never })).toThrow(/Invalid status filter/);
+    const invalidQuery: ListDeploymentsQuery = {};
+    Object.defineProperty(invalidQuery, "status", { value: "" });
+    expect(() => service.list(invalidQuery)).toThrow(/Invalid status filter/);
   });
 });

@@ -8,6 +8,14 @@ export const deploymentStatuses = [
 
 export type DeploymentStatus = (typeof deploymentStatuses)[number];
 
+export function isDeploymentStatus(value: unknown): value is DeploymentStatus {
+  return value === "queued"
+    || value === "running"
+    || value === "succeeded"
+    || value === "failed"
+    || value === "rolled_back";
+}
+
 export interface Deployment {
   readonly id: string;
   readonly service: string;
@@ -18,6 +26,10 @@ export interface Deployment {
 }
 
 export type TransitionTarget = Exclude<DeploymentStatus, "queued">;
+
+export function isTransitionTarget(value: unknown): value is TransitionTarget {
+  return isDeploymentStatus(value) && value !== "queued";
+}
 
 export interface ListDeploymentsQuery {
   service?: string;

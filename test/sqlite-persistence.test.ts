@@ -4,7 +4,8 @@ import { DeploymentService } from "../src/deployment-service.js";
 import { ApiError } from "../src/errors.js";
 import { createApp } from "../src/server.js";
 import { SqliteDeploymentRepository } from "../src/sqlite-deployment-repository.js";
-import type { Deployment, DeploymentPage } from "../src/types.js";
+import type { Deployment } from "../src/types.js";
+import { parseDeployment, parseDeploymentPage, parseError, parseResponse } from "./response-parser.js";
 
 const temporaryDatabases = new Set<string>();
 
@@ -34,7 +35,7 @@ afterEach(async () => {
 });
 
 function serviceFor(path: string): DeploymentService {
-  return new DeploymentService(Date.now, new SqliteDeploymentRepository(path));
+  return new DeploymentService(new SqliteDeploymentRepository(path));
 }
 
 async function post(baseUrl: string, path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
@@ -144,7 +145,9 @@ describe("SQLite persistence and constraints", () => {
 
     const restartedService = serviceFor(path);
     restartedService.create({ service: "four", version: "4" });
-    const secondPage = restartedService.list({ limit: 2, cursor: firstPage.nextCursor ?? undefined });
+    const secondPage = firstPage.nextCursor === null
+      ? restartedService.list({ limit: 2 })
+      : restartedService.list({ limit: 2, cursor: firstPage.nextCursor });
     expect(secondPage.data.map(({ id }) => id)).toEqual([oldest.id]);
     restartedService.close();
   });
@@ -358,7 +361,7 @@ describe("SQLite persistence and constraints", () => {
     bootstrap.close();
     const locker = new Database(path, { strict: true });
     locker.run("BEGIN IMMEDIATE");
-    const service = new DeploymentService(Date.now, new SqliteDeploymentRepository(path, 0));
+    const service = new DeploymentService(new SqliteDeploymentRepository(path, 0));
     let caught: unknown;
     try {
       service.create({ service: "busy", version: "1" });
@@ -366,13 +369,14 @@ describe("SQLite persistence and constraints", () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(ApiError);
-    expect((caught as ApiError).statusCode).toBe(503);
+    if (!(caught instanceof ApiError)) throw new Error("Expected ApiError");
+    expect(caught.statusCode).toBe(503);
 
     const app = createApp({ service });
     try {
       const response = await post(app.url.origin, "/deployments", { service: "busy", version: "1" });
       expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: "Deployment storage is busy; retry the request" });
+      expect(await parseResponse(response, parseError)).toEqual({ error: "Deployment storage is busy; retry the request" });
     } finally {
       await app.stop(true);
       service.close();
@@ -420,12 +424,15 @@ describe("SQLite persistence and constraints", () => {
       { "idempotency-key": "api-3" },
     );
     expect(createResponse.status).toBe(201);
-    const created = await createResponse.json() as Deployment;
+    const created = await parseResponse(createResponse, parseDeployment);
     await app.stop(true);
 
     const restartedApp = createApp({ databasePath: path });
     try {
-      const page = await (await fetch(`${restartedApp.url.origin}/deployments`)).json() as DeploymentPage;
+      const page = await parseResponse(
+        await fetch(`${restartedApp.url.origin}/deployments`),
+        parseDeploymentPage,
+      );
       expect(page.data.map(({ id }) => id)).toEqual([created.id]);
       const replay = await post(
         restartedApp.url.origin,
@@ -434,7 +441,7 @@ describe("SQLite persistence and constraints", () => {
         { "idempotency-key": "api-3" },
       );
       expect(replay.status).toBe(201);
-      expect(await replay.json()).toMatchObject({ id: created.id });
+      expect(await parseResponse(replay, parseDeployment)).toMatchObject({ id: created.id });
     } finally {
       await restartedApp.stop(true);
     }
@@ -458,11 +465,13 @@ describe("SQLite persistence and constraints", () => {
       port: 0,
       fetch: () => new Response("occupied"),
     });
+    if (occupied.port === undefined) throw new Error("Expected occupied server port");
+    const occupiedPort = occupied.port;
     const closeSpy = spyOn(DeploymentService.prototype, "close");
     try {
       expect(() => createApp({
         databasePath: temporaryDatabase(),
-        port: occupied.port,
+        port: occupiedPort,
       })).toThrow();
       expect(closeSpy).toHaveBeenCalledTimes(1);
     } finally {

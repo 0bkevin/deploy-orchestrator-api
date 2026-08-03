@@ -2,7 +2,7 @@ import { ApiError } from "./errors.js";
 import { DeploymentService } from "./deployment-service.js";
 import { decodePathSegment } from "./path.js";
 import { SqliteDeploymentRepository } from "./sqlite-deployment-repository.js";
-import { deploymentStatuses, type DeploymentStatus } from "./types.js";
+import { isDeploymentStatus } from "./types.js";
 
 const transitionPath = /^\/deployments\/([^/]+)\/transitions$/;
 const currentPath = /^\/services\/([^/]+)\/current$/;
@@ -16,17 +16,22 @@ async function readJson(request: Request): Promise<unknown> {
   if (!body) return {};
 
   try {
-    return JSON.parse(body) as unknown;
+    const parsed: unknown = JSON.parse(body);
+    return parsed;
   } catch {
     throw new ApiError(400, "Request body must be valid JSON");
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new ApiError(400, "Request body must be a JSON object");
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function parseInteger(value: string | null, field: string): number | undefined {
@@ -75,18 +80,21 @@ async function handleRequest(service: DeploymentService, request: Request): Prom
     if (method === "GET" && url.pathname === "/deployments") {
       const status = url.searchParams.get("status");
       const serviceFilter = url.searchParams.get("service");
-      if (status !== null && !deploymentStatuses.includes(status as DeploymentStatus)) {
+      if (status !== null && !isDeploymentStatus(status)) {
         throw new ApiError(400, "Invalid status filter");
       }
       if (serviceFilter !== null && !serviceFilter.trim()) {
         throw new ApiError(400, "service filter must be a non-empty string");
       }
+      const limit = parseInteger(url.searchParams.get("limit"), "limit");
+      const cursor = url.searchParams.get("cursor");
+      const offset = parseInteger(url.searchParams.get("offset"), "offset");
       return json(200, service.list({
-        service: serviceFilter ?? undefined,
-        status: (status as DeploymentStatus | null) ?? undefined,
-        limit: parseInteger(url.searchParams.get("limit"), "limit"),
-        cursor: url.searchParams.get("cursor") ?? undefined,
-        offset: parseInteger(url.searchParams.get("offset"), "offset"),
+        ...(serviceFilter === null ? {} : { service: serviceFilter }),
+        ...(status === null ? {} : { status }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(cursor === null ? {} : { cursor }),
+        ...(offset === undefined ? {} : { offset }),
       }));
     }
 
@@ -114,7 +122,6 @@ interface AppOptions {
 export function createApp(options: AppOptions = {}): Bun.Server<undefined> {
   const ownsService = options.service === undefined;
   const service = options.service ?? new DeploymentService(
-    Date.now,
     new SqliteDeploymentRepository(options.databasePath),
   );
   let server: Bun.Server<undefined>;

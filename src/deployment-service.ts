@@ -4,14 +4,13 @@ import {
   StorageConstraintError,
   type DeploymentRepository,
 } from "./deployment-repository.js";
-import { createDefaultDeploymentRepository } from "./default-deployment-repository.js";
 import {
-  deploymentStatuses,
+  isDeploymentStatus,
+  isTransitionTarget,
   type Deployment,
   type DeploymentPage,
   type DeploymentStatus,
   type ListDeploymentsQuery,
-  type TransitionTarget,
 } from "./types.js";
 
 const legalTransitions: Readonly<Record<DeploymentStatus, readonly DeploymentStatus[]>> = {
@@ -26,8 +25,8 @@ export class DeploymentService {
   private readonly startedAt: number;
 
   constructor(
+    private readonly repository: DeploymentRepository,
     private readonly now: () => number = Date.now,
-    private readonly repository: DeploymentRepository = createDefaultDeploymentRepository(),
   ) {
     this.startedAt = now();
   }
@@ -67,14 +66,14 @@ export class DeploymentService {
   }
 
   transition(id: string, target: unknown): Deployment {
-    if (!deploymentStatuses.includes(target as DeploymentStatus) || target === "queued") {
+    if (!isTransitionTarget(target)) {
       throw new ApiError(400, "'to' must be running, succeeded, failed, or rolled_back");
     }
 
     try {
       return this.repository.immediate(() => {
         const deployment = this.mustFind(id);
-        const to = target as TransitionTarget;
+        const to = target;
         if (!legalTransitions[deployment.status].includes(to)) {
           throw new ApiError(409, `Cannot transition from '${deployment.status}' to '${to}'`);
         }
@@ -102,21 +101,25 @@ export class DeploymentService {
     if (!Number.isInteger(offset) || offset < 0) {
       throw new ApiError(400, "offset must be a non-negative integer");
     }
-    if (query.status !== undefined && !deploymentStatuses.includes(query.status)) {
+    if (query.status !== undefined && !isDeploymentStatus(query.status)) {
       throw new ApiError(400, "Invalid status filter");
     }
     if (query.cursor !== undefined && query.offset !== undefined) {
       throw new ApiError(400, "cursor and offset cannot be combined");
     }
 
+    const service = query.service === undefined
+      ? undefined
+      : this.requireNonEmptyString(query.service, "service filter");
     const beforeSequence = query.cursor === undefined ? undefined : this.decodeCursor(query.cursor);
-    const page = this.repository.list({
-      service: query.service,
-      status: query.status,
+    const filters = {
+      ...(service === undefined ? {} : { service }),
+      ...(query.status === undefined ? {} : { status: query.status }),
+      ...(beforeSequence === undefined ? {} : { beforeSequence }),
       limit,
       offset,
-      beforeSequence,
-    });
+    };
+    const page = this.repository.list(filters);
     return {
       data: page.data,
       nextCursor: page.hasMore && page.lastSequence !== null
@@ -129,8 +132,9 @@ export class DeploymentService {
   }
 
   current(service: string): Deployment {
-    const current = this.repository.current(service);
-    if (!current) throw new ApiError(404, `No current succeeded deployment for '${service}'`);
+    const normalizedService = service.trim();
+    const current = this.repository.current(normalizedService);
+    if (!current) throw new ApiError(404, `No current succeeded deployment for '${normalizedService}'`);
     return current;
   }
 

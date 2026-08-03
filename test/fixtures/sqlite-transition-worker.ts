@@ -9,7 +9,7 @@ if (!databasePath || !deploymentId || !target) {
   throw new Error("database path, deployment id, and target are required");
 }
 
-const service = new DeploymentService(Date.now, new SqliteDeploymentRepository(databasePath));
+const service = new DeploymentService(new SqliteDeploymentRepository(databasePath));
 try {
   const deployment = service.transition(deploymentId, target);
   console.log(`200:${deployment.status}`);

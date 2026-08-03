@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createApp } from "../src/server.js";
 import type { Deployment } from "../src/types.js";
-
-interface Page {
-  data: Deployment[];
-  nextCursor: string | null;
-  nextOffset: number | null;
-}
+import {
+  parseDeployment,
+  parseDeploymentPage,
+  parseError,
+  parseHealth,
+  parseResponse,
+} from "./response-parser.js";
 
 describe("Deploy Orchestrator HTTP API", () => {
   let server: ReturnType<typeof createApp>;
@@ -44,7 +45,7 @@ describe("Deploy Orchestrator HTTP API", () => {
   ): Promise<{ response: Response; deployment: Deployment }> {
     const headers: Record<string, string> = idempotencyKey ? { "idempotency-key": idempotencyKey } : {};
     const response = await post("/deployments", { service, version }, headers);
-    const deployment = await response.json() as Deployment;
+    const deployment = await parseResponse(response.clone(), parseDeployment);
     return { response, deployment };
   }
 
@@ -65,8 +66,27 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(replay.deployment).toEqual(first.deployment);
 
     const list = await fetch(`${baseUrl}/deployments`);
-    const page = await list.json() as Page;
+    const page = await parseResponse(list, parseDeploymentPage);
     expect(page.data).toHaveLength(1);
+  });
+
+  test("normalizes service whitespace for creation, list filters, and current lookup", async () => {
+    const created = await createDeployment("  orders-api  ", "  1.0.0  ");
+    expect(created.deployment).toMatchObject({ service: "orders-api", version: "1.0.0" });
+
+    const page = await parseResponse(
+      await fetch(`${baseUrl}/deployments?service=%20%20orders-api%20%20`),
+      parseDeploymentPage,
+    );
+    expect(page.data.map(({ id }) => id)).toEqual([created.deployment.id]);
+
+    await transition(created.deployment.id, "running");
+    await transition(created.deployment.id, "succeeded");
+    const current = await parseResponse(
+      await fetch(`${baseUrl}/services/%20%20orders-api%20%20/current`),
+      parseDeployment,
+    );
+    expect(current.id).toBe(created.deployment.id);
   });
 
   test("rejects an idempotency key reused with a different payload", async () => {
@@ -77,7 +97,7 @@ describe("Deploy Orchestrator HTTP API", () => {
       { "idempotency-key": "shared-key" },
     );
     expect(conflict.status).toBe(409);
-    const errorBody = await conflict.json() as { error: string };
+    const errorBody = await parseResponse(conflict, parseError);
     expect(errorBody.error).toMatch(/different payload/i);
   });
 
@@ -89,7 +109,7 @@ describe("Deploy Orchestrator HTTP API", () => {
 
     expect(responses.every(({ response }) => response.status === 201)).toBe(true);
     expect(new Set(responses.map(({ deployment }) => deployment.id))).toHaveLength(1);
-    const page = await (await fetch(`${baseUrl}/deployments`)).json() as Page;
+    const page = await parseResponse(await fetch(`${baseUrl}/deployments`), parseDeploymentPage);
     expect(page.data).toHaveLength(1);
   });
 
@@ -103,7 +123,7 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(statuses.filter((status) => status === 201)).toHaveLength(1);
     expect(statuses.filter((status) => status === 409)).toHaveLength(19);
     const health = await fetch(`${baseUrl}/health`);
-    expect(await health.json()).toMatchObject({ status: "ok", inFlight: 1 });
+    expect(await parseResponse(health, parseHealth)).toMatchObject({ status: "ok", inFlight: 1 });
   });
 
   test("applies transitions atomically and returns the required error codes", async () => {
@@ -157,18 +177,24 @@ describe("Deploy Orchestrator HTTP API", () => {
     const latest = await createDeployment("catalog", "1.1.0");
 
     const firstPageResponse = await fetch(`${baseUrl}/deployments?limit=2&offset=0`);
-    const firstPage = await firstPageResponse.json() as Page;
+    const firstPage = await parseResponse(firstPageResponse, parseDeploymentPage);
     expect(firstPageResponse.status).toBe(200);
     expect(firstPage.data).toHaveLength(2);
     expect(firstPage.data[0]?.id).toBe(latest.deployment.id);
     expect(firstPage.nextOffset).toBe(2);
     expect(firstPage.nextCursor).toBeTruthy();
 
-    const secondPage = await (await fetch(`${baseUrl}/deployments?limit=2&offset=2`)).json() as Page;
+    const secondPage = await parseResponse(
+      await fetch(`${baseUrl}/deployments?limit=2&offset=2`),
+      parseDeploymentPage,
+    );
     expect(secondPage.data).toHaveLength(1);
     expect(secondPage.nextOffset).toBeNull();
 
-    const filtered = await (await fetch(`${baseUrl}/deployments?service=catalog&status=queued`)).json() as Page;
+    const filtered = await parseResponse(
+      await fetch(`${baseUrl}/deployments?service=catalog&status=queued`),
+      parseDeploymentPage,
+    );
     expect(filtered.data).toHaveLength(1);
     expect(filtered.data[0]?.id).toBe(latest.deployment.id);
   });
@@ -196,17 +222,20 @@ describe("Deploy Orchestrator HTTP API", () => {
       ["rolled_back", rolledBack.deployment.id],
     ]);
     for (const [status, id] of expected) {
-      const page = await (await fetch(`${baseUrl}/deployments?status=${status}`)).json() as Page;
+      const page = await parseResponse(
+        await fetch(`${baseUrl}/deployments?status=${status}`),
+        parseDeploymentPage,
+      );
       expect(page.data.map((deployment) => deployment.id)).toEqual([id]);
     }
 
-    const combined = await (await fetch(
+    const combined = await parseResponse(await fetch(
       `${baseUrl}/deployments?service=succeeded-service&status=succeeded`,
-    )).json() as Page;
+    ), parseDeploymentPage);
     expect(combined.data.map(({ id }) => id)).toEqual([succeeded.deployment.id]);
-    const mismatch = await (await fetch(
+    const mismatch = await parseResponse(await fetch(
       `${baseUrl}/deployments?service=succeeded-service&status=failed`,
-    )).json() as Page;
+    ), parseDeploymentPage);
     expect(mismatch.data).toHaveLength(0);
   });
 
@@ -215,13 +244,19 @@ describe("Deploy Orchestrator HTTP API", () => {
     await createDeployment("two", "2");
     const newest = await createDeployment("three", "3");
 
-    const firstPage = await (await fetch(`${baseUrl}/deployments?limit=2`)).json() as Page;
+    const firstPage = await parseResponse(
+      await fetch(`${baseUrl}/deployments?limit=2`),
+      parseDeploymentPage,
+    );
     expect(firstPage.data[0]?.id).toBe(newest.deployment.id);
     expect(firstPage.nextCursor).toBeTruthy();
 
     await createDeployment("four", "4");
     const cursor = encodeURIComponent(firstPage.nextCursor ?? "");
-    const secondPage = await (await fetch(`${baseUrl}/deployments?limit=2&cursor=${cursor}`)).json() as Page;
+    const secondPage = await parseResponse(
+      await fetch(`${baseUrl}/deployments?limit=2&cursor=${cursor}`),
+      parseDeploymentPage,
+    );
     expect(secondPage.data.map(({ id }) => id)).toEqual([oldest.deployment.id]);
     expect(secondPage.nextCursor).toBeNull();
   });
@@ -236,12 +271,18 @@ describe("Deploy Orchestrator HTTP API", () => {
 
     const current = await fetch(`${baseUrl}/services/web/current`);
     expect(current.status).toBe(200);
-    expect(await current.json()).toMatchObject({ id: latest.deployment.id, status: "succeeded" });
+    expect(await parseResponse(current, parseDeployment)).toMatchObject({
+      id: latest.deployment.id,
+      status: "succeeded",
+    });
 
     await transition(latest.deployment.id, "rolled_back");
     const restored = await fetch(`${baseUrl}/services/web/current`);
     expect(restored.status).toBe(200);
-    expect(await restored.json()).toMatchObject({ id: first.deployment.id, status: "succeeded" });
+    expect(await parseResponse(restored, parseDeployment)).toMatchObject({
+      id: first.deployment.id,
+      status: "succeeded",
+    });
   });
 
   test("returns 404 when a service has no current succeeded deployment", async () => {
@@ -254,14 +295,14 @@ describe("Deploy Orchestrator HTTP API", () => {
 
   test("reports uptime and the exact queued plus running count", async () => {
     const initial = await fetch(`${baseUrl}/health`);
-    expect(await initial.json()).toMatchObject({ status: "ok", inFlight: 0 });
+    expect(await parseResponse(initial, parseHealth)).toMatchObject({ status: "ok", inFlight: 0 });
 
     const { deployment } = await createDeployment("worker", "5.0.0");
-    expect(await (await fetch(`${baseUrl}/health`)).json()).toMatchObject({ inFlight: 1 });
+    expect(await parseResponse(await fetch(`${baseUrl}/health`), parseHealth)).toMatchObject({ inFlight: 1 });
     await transition(deployment.id, "running");
-    expect(await (await fetch(`${baseUrl}/health`)).json()).toMatchObject({ inFlight: 1 });
+    expect(await parseResponse(await fetch(`${baseUrl}/health`), parseHealth)).toMatchObject({ inFlight: 1 });
     await transition(deployment.id, "failed");
-    const finalHealth = await (await fetch(`${baseUrl}/health`)).json() as { uptime: number; inFlight: number };
+    const finalHealth = await parseResponse(await fetch(`${baseUrl}/health`), parseHealth);
     expect(finalHealth.inFlight).toBe(0);
     expect(finalHealth.uptime).toBeGreaterThanOrEqual(0);
   });
