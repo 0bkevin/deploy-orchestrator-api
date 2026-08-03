@@ -122,6 +122,31 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(terminal.map((response) => response.status).sort()).toEqual([200, 409]);
   });
 
+  test("exercises every legal lifecycle branch and terminal-state rejection over HTTP", async () => {
+    const success = await createDeployment("success-path", "1.0.0");
+    expect((await transition(success.deployment.id, "running")).status).toBe(200);
+    expect((await transition(success.deployment.id, "succeeded")).status).toBe(200);
+    expect((await transition(success.deployment.id, "rolled_back")).status).toBe(200);
+    expect((await transition(success.deployment.id, "running")).status).toBe(409);
+
+    const failure = await createDeployment("failure-path", "1.0.0");
+    expect((await transition(failure.deployment.id, "running")).status).toBe(200);
+    expect((await transition(failure.deployment.id, "failed")).status).toBe(200);
+    expect((await transition(failure.deployment.id, "running")).status).toBe(409);
+
+    const queued = await createDeployment("queued-path", "1.0.0");
+    expect((await transition(queued.deployment.id, "succeeded")).status).toBe(409);
+    expect((await transition(queued.deployment.id, "queued")).status).toBe(400);
+  });
+
+  test("enforces the active-deployment constraint while running and releases it at a terminal state", async () => {
+    const active = await createDeployment("worker-pool", "1.0.0");
+    await transition(active.deployment.id, "running");
+    expect((await post("/deployments", { service: "worker-pool", version: "1.1.0" })).status).toBe(409);
+    await transition(active.deployment.id, "failed");
+    expect((await post("/deployments", { service: "worker-pool", version: "1.1.0" })).status).toBe(201);
+  });
+
   test("lists newest first with combinable filters and offset pagination", async () => {
     const first = await createDeployment("catalog", "1.0.0");
     await transition(first.deployment.id, "running");
@@ -180,6 +205,14 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect(await restored.json()).toMatchObject({ id: first.deployment.id, status: "succeeded" });
   });
 
+  test("returns 404 when a service has no current succeeded deployment", async () => {
+    expect((await fetch(`${baseUrl}/services/unknown/current`)).status).toBe(404);
+    const deployment = await createDeployment("never-succeeded", "1.0.0");
+    await transition(deployment.deployment.id, "running");
+    await transition(deployment.deployment.id, "failed");
+    expect((await fetch(`${baseUrl}/services/never-succeeded/current`)).status).toBe(404);
+  });
+
   test("reports uptime and the exact queued plus running count", async () => {
     const initial = await fetch(`${baseUrl}/health`);
     expect(await initial.json()).toMatchObject({ status: "ok", inFlight: 0 });
@@ -202,9 +235,13 @@ describe("Deploy Orchestrator HTTP API", () => {
     expect((await fetch(`${baseUrl}/deployments?status=`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?status=unknown`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?limit=0`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/deployments?limit=101`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?offset=-1`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/deployments?offset=9007199254740992`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?cursor=bad`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/deployments?cursor=v1.MA&offset=0`)).status).toBe(400);
+    expect((await post("/deployments", { service: "x", version: "1" }, { "idempotency-key": " " })).status).toBe(400);
     expect((await post("/deployments/%/transitions", { to: "running" })).status).toBe(400);
+    expect((await fetch(`${baseUrl}/unknown-route`)).status).toBe(404);
   });
 });

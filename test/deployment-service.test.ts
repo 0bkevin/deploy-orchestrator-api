@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ApiError } from "../src/errors.js";
 import { DeploymentService } from "../src/deployment-service.js";
 import { decodePathSegment } from "../src/path.js";
+import type { DeploymentStatus, TransitionTarget } from "../src/types.js";
 
 describe("DeploymentService", () => {
   test("enforces the state machine and rejects illegal transitions", () => {
@@ -11,6 +12,38 @@ describe("DeploymentService", () => {
     expect(service.transition(deployment.id, "succeeded").status).toBe("succeeded");
     expect(() => service.transition(deployment.id, "running")).toThrow(ApiError);
     expect(() => service.transition(deployment.id, "running")).toThrow(/Cannot transition/);
+  });
+
+  test("exhaustively enforces every state and transition-target pair", () => {
+    const paths: Record<DeploymentStatus, readonly TransitionTarget[]> = {
+      queued: [],
+      running: ["running"],
+      succeeded: ["running", "succeeded"],
+      failed: ["running", "failed"],
+      rolled_back: ["running", "succeeded", "rolled_back"],
+    };
+    const allowed: Record<DeploymentStatus, readonly TransitionTarget[]> = {
+      queued: ["running"],
+      running: ["succeeded", "failed"],
+      succeeded: ["rolled_back"],
+      failed: [],
+      rolled_back: [],
+    };
+    const targets: readonly TransitionTarget[] = ["running", "succeeded", "failed", "rolled_back"];
+
+    for (const source of Object.keys(paths) as DeploymentStatus[]) {
+      for (const target of targets) {
+        const service = new DeploymentService();
+        const deployment = service.create({ service: `${source}-${target}`, version: "1" });
+        for (const step of paths[source]) service.transition(deployment.id, step);
+
+        if (allowed[source].includes(target)) {
+          expect(service.transition(deployment.id, target).status).toBe(target);
+        } else {
+          expect(() => service.transition(deployment.id, target)).toThrow(/Cannot transition/);
+        }
+      }
+    }
   });
 
   test("allows only one in-flight deployment per service", () => {
