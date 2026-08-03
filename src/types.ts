@@ -23,5 +23,12 @@ export interface ListDeploymentsQuery {
   service?: string;
   status?: DeploymentStatus;
   limit?: number;
+  cursor?: string;
   offset?: number;
+}
+
+export interface DeploymentPage {
+  readonly data: readonly Deployment[];
+  readonly nextCursor: string | null;
+  readonly nextOffset: number | null;
 }

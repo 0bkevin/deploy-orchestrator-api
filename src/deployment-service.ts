@@ -3,6 +3,7 @@ import { ApiError } from "./errors.js";
 import {
   deploymentStatuses,
   type Deployment,
+  type DeploymentPage,
   type DeploymentStatus,
   type ListDeploymentsQuery,
   type TransitionTarget,
@@ -79,20 +80,28 @@ export class DeploymentService {
     return this.copy(updated);
   }
 
-  list(query: ListDeploymentsQuery = {}): { data: Deployment[]; nextOffset: number | null } {
+  list(query: ListDeploymentsQuery = {}): DeploymentPage {
     const limit = query.limit ?? 20;
     const offset = query.offset ?? 0;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "limit must be an integer between 1 and 100");
     if (!Number.isInteger(offset) || offset < 0) throw new ApiError(400, "offset must be a non-negative integer");
     if (query.status !== undefined && !deploymentStatuses.includes(query.status)) throw new ApiError(400, "Invalid status filter");
+    if (query.cursor !== undefined && query.offset !== undefined) throw new ApiError(400, "cursor and offset cannot be combined");
+
+    const cursorOrder = query.cursor === undefined ? undefined : this.decodeCursor(query.cursor);
 
     const matching = [...this.deployments.values()]
-      .filter((item) => !query.service || item.service === query.service)
-      .filter((item) => !query.status || item.status === query.status)
+      .filter((item) => query.service === undefined || item.service === query.service)
+      .filter((item) => query.status === undefined || item.status === query.status)
+      .filter((item) => cursorOrder === undefined || this.orderOf(item) < cursorOrder)
       .sort((a, b) => this.orderOf(b) - this.orderOf(a));
-    const data = matching.slice(offset, offset + limit).map((deployment) => this.copy(deployment));
-    const nextOffset = offset + data.length < matching.length ? offset + data.length : null;
-    return { data, nextOffset };
+    const pageRecords = matching.slice(offset, offset + limit);
+    const hasMore = offset + pageRecords.length < matching.length;
+    const lastRecord = pageRecords.at(-1);
+    const data = pageRecords.map((deployment) => this.copy(deployment));
+    const nextCursor = hasMore && lastRecord ? this.encodeCursor(this.orderOf(lastRecord)) : null;
+    const nextOffset = query.cursor === undefined && hasMore ? offset + data.length : null;
+    return { data, nextCursor, nextOffset };
   }
 
   current(service: string): Deployment {
@@ -127,6 +136,21 @@ export class DeploymentService {
 
   private copy(deployment: Deployment): Deployment {
     return { ...deployment };
+  }
+
+  private encodeCursor(order: number): string {
+    return `v1.${Buffer.from(String(order)).toString("base64url")}`;
+  }
+
+  private decodeCursor(cursor: string): number {
+    const match = /^v1\.([A-Za-z0-9_-]+)$/.exec(cursor);
+    if (!match?.[1]) throw new ApiError(400, "cursor is invalid");
+
+    const decoded = Buffer.from(match[1], "base64url").toString("utf8");
+    if (!/^\d+$/.test(decoded)) throw new ApiError(400, "cursor is invalid");
+    const order = Number(decoded);
+    if (!Number.isSafeInteger(order)) throw new ApiError(400, "cursor is invalid");
+    return order;
   }
 
   private requireNonEmptyString(value: unknown, field: string): string {
